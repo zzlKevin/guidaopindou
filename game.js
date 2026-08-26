@@ -139,18 +139,19 @@ wx.request = function (options) {
     return fireSuccess(options, buildMiniEventResp(options));
   }
 
-  // 3. 埋点/上报类（拦掉，避免风控；失败也不影响游戏）
-  if (url.indexOf("jajsy.lumosfun.com") >= 0 || url.indexOf("gjyxkvuxz.lumosfun.com") >= 0) {
-    offlineLog("REPORT", url.split("/")[3] || "");
-    return fireSuccess(options, '{"code":"0","msg":""}');
-  }
-  if (url.indexOf("wjrtyjhkl.lumosfun.com") >= 0) {
-    offlineLog("REPORT", "DbtRemoteConfig -> 回放远程配置");
-    return fireSuccess(options, REPLAY_DBT_CFG);
-  }
-  if (url.indexOf("fixhkl.lumosfun.com") >= 0) {
-    offlineLog("REPORT", "getAdzCfg -> 回放广告配置");
-    return fireSuccess(options, REPLAY_ADZ_CFG);
+  // 3. 广告系统相关服务器（adscfg/adsreport/远程配置/事件上报）→ 透传真实服务器
+  //    ⚠️ 不能拦！这些接口的响应是加密的，伪造数据会导致 C# 解密失败
+  //    （"Bytes is invalid"→ 广告系统初始化中断 → 广告永远"未准备好"）。
+  //    透传只用于配置下载和埋点上报，无风控风险；免广告由广告 API hook 层实现。
+  if (url.indexOf("jajsy.lumosfun.com") >= 0 ||
+      url.indexOf("gjyxkvuxz.lumosfun.com") >= 0 ||
+      url.indexOf("wjrtyjhkl.lumosfun.com") >= 0 ||
+      url.indexOf("fixhkl.lumosfun.com") >= 0 ||
+      url.indexOf("fixfun.lumosfun.com") >= 0 ||      // adsapi
+      url.indexOf("fixgniinsl.lumosfun.com") >= 0 ||  // adsbidding
+      url.indexOf("fyywngzynts.lumosfun.com") >= 0) { // attribution
+    offlineLog("ADS", "透传真实服务器: " + (url.split("/")[3] || ""));
+    return __originalRequest(options);
   }
   if (url.indexOf("backend.gravity-engine.com") >= 0) {
     var body = "";
