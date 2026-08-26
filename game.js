@@ -1,22 +1,20 @@
 // ================================================================
-// 离线模式拦截器 v6 —— 2026-08-26 自适应版
+// 离线模式拦截器 v7 —— 2026-08-26 晚
 //
-// 本版核心变化：
-//   0. project.config.json 的 appid 已改为游戏真身 wx5d871736426d2811
-//      （原来是 Unity 插件的 appid，导致 wx.login 的 code 与服务器
-//        code2Session 的 appid 不匹配 → 服务器返回空 → 这就是原版
-//        "一直在加载中"的根本原因）
-//   1. 自适应登录：login.do 先打真实服务器，成功 → 全部加密接口透传
-//      （广告系统真实初始化 + 假广告秒发奖）；失败 → 自动回退回放模式
-//   2. 启动日志持久化：[OFFLINE] 日志存到 storage 的 offline_logs
-//      （查看方法：开发者工具 Console 输入
-//        JSON.parse(wx.getStorageSync('offline_logs')||'[]') ）
-//   3. 启动45秒 watchdog：自动报告广告系统是否初始化
-//   4. 云存档本地化：上传的存档备份到本地，云端版本冻结 → 本地优先
-//   5. 道具加满：体力999 / buff永久 / 道具99（重开小程序生效）
-//   6. 免广告：激励视频秒完成 isEnded:true 直接发奖
+// 本版变化：
+//   0. appid 保持 wxb710578e30185510（用户工具链绑定，不能改）。
+//      真实登录此路不通（wx.login 的 code 归属本 appid，而 login.do
+//      按游戏的 appid=wx5d871736426d2811 做 code2Session，必不匹配）
+//      → 自适应登录自动落在回放模式，功能无损
+//   1. 安装时间回溯：广告配置里有 firstDayNoAd（首日无广告）开关，
+//      本 hook 扫描存储里疑似"安装/注册时间"的字段，自动回溯30天，
+//      绕过"首日不加载广告"的限制
+//   2. 启动日志持久化 offline_logs + 45秒 watchdog（v6）
+//   3. 云存档本地化 / 道具加满 / 免广告 hook（v5）
 //
-// 资源 CDN 和微信自身请求保持放行。
+// 倒计时说明：关卡倒计时是 C# 纯内存计算（PBGameModel_Z.LeftTime
+// 每帧递减），JS 层无法冻结（冻结 performance.now 会连动画一起冻死）。
+// 等效方案：广告复活（+120秒/次，假广告秒完成）→ 无限续时间。
 // ================================================================
 var OFFLINE = {
   ENABLED: true,        // 总开关
@@ -377,6 +375,61 @@ wx.request = function (options) {
   return __originalRequest(sniffRequest(options));
 };
 
+// ---- 安装时间回溯：绕过 firstDayNoAd（首日无广告）----
+// 原理：广告配置的"首日不加载广告"按 安装时间/注册日 判定。
+// C# 读到的任何"安装/注册/首玩时间"如果落在今天，就回溯30天。
+var INSTALL_BACKDATE_DAYS = 30;
+var __backdateKeys = {}; // 已回溯过的 key，避免重复日志
+function looksLikeTimestamp(v) {
+  // 13位毫秒时间戳（2000~2100年）或 10位秒时间戳
+  return (typeof v === "number" && v > 946684800 && v < 4102444800) ||
+         (typeof v === "number" && v > 946684800000 && v < 4102444800000);
+}
+function backdateValue(v) {
+  if (typeof v === "number") {
+    if (v > 946684800000) return v - INSTALL_BACKDATE_DAYS * 86400000; // 毫秒
+    if (v > 946684800) return v - INSTALL_BACKDATE_DAYS * 86400;      // 秒
+  }
+  return v;
+}
+function tryBackdate(key, value) {
+  if (!OFFLINE.goodsCheat) return value; // 跟作弊总开关走
+  try {
+    var nowMs = Date.now();
+    var upperMs = nowMs + 86400000; // 明天之内（未来的解锁时间不动）
+    // 数字且 key 名疑似"安装/注册/创建/首玩" → 直接回溯
+    if (typeof value === "number" && /install|create|register|first|newuser|new_user/i.test(key)) {
+      if (looksLikeTimestamp(value) && value > 1700000000 && value < upperMs) {
+        var nv2 = backdateValue(value);
+        if (nv2 !== value && __backdateKeys[key] !== String(value)) {
+          __backdateKeys[key] = String(nv2);
+          offlineLog("CHEAT", "安装时间回溯 " + key + ": " + value + " -> " + nv2);
+          return nv2;
+        }
+      }
+      return value;
+    }
+    // JSON 字符串：不管顶层 key 名，探测内部时间戳字段（install/create/first/time）
+    if (typeof value === "string" && value.length > 5 && value.length < 3000 && value.charAt(0) === "{") {
+      var o = JSON.parse(value);
+      var changed = false;
+      for (var f in o) {
+        if (!/install|create|register|first/i.test(f)) continue; // 只动明确的字段，纯time结尾的太宽
+        var val = o[f];
+        if (typeof val === "number" && val > 1700000000 && val < upperMs) {
+          var nf = backdateValue(val);
+          if (nf !== val) { o[f] = nf; changed = true; }
+        }
+      }
+      if (changed) {
+        offlineLog("CHEAT", "JSON时间回溯: " + key + " (绕过首日无广告)");
+        return JSON.stringify(o);
+      }
+    }
+  } catch (e) {}
+  return value;
+}
+
 // ---- 存储 hook：写入加满道具 + 读取也加满 + 嗅探日志 ----
 (function hookStorage() {
   // 写入：道具模型在写入时自动加满（C#写回扣减后的值也会被补回999/99）
@@ -387,6 +440,7 @@ wx.request = function (options) {
         if (o && isGoodsKey(o.key) && typeof o.data === "string") {
           o.data = boostGoods(o.data, "setStorage");
         }
+        if (o) o.data = tryBackdate(o.key, o.data);
         if (OFFLINE.sniffStorage) {
           var v = o && o.data;
           var s = typeof v === "string" ? v : JSON.stringify(v);
@@ -404,6 +458,7 @@ wx.request = function (options) {
         if (isGoodsKey(k) && typeof v === "string") {
           v = boostGoods(v, "setStorageSync");
         }
+        v = tryBackdate(k, v);
         if (OFFLINE.sniffStorage) {
           var s = typeof v === "string" ? v : JSON.stringify(v);
           if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
@@ -422,6 +477,7 @@ wx.request = function (options) {
         v = boostGoods(v, "getStorageSync");
         if (OFFLINE.sniffStorage) offlineLog("STOR", "GETSync " + k + " (" + v.length + "B 已加满)");
       }
+      v = tryBackdate(k, v);
       return v;
     };
   }
@@ -429,14 +485,16 @@ wx.request = function (options) {
   var origGet = wx.getStorage;
   if (origGet) {
     wx.getStorage = function (o) {
-      if (o && isGoodsKey(o.key) && o.success) {
+      if (o && o.success) {
+        var isGoods = isGoodsKey(o.key);
         var origSuccess = o.success;
         var wrapped = {};
         for (var kk in o) wrapped[kk] = o[kk];
         wrapped.success = function (res) {
-          if (res && typeof res.data === "string" && res.data.length > 5) {
+          if (isGoods && res && typeof res.data === "string" && res.data.length > 5) {
             res.data = boostGoods(res.data, "getStorage");
           }
+          if (res) res.data = tryBackdate(o.key, res.data);
           origSuccess(res);
         };
         o = wrapped;
@@ -556,6 +614,23 @@ wx.request = function (options) {
               var ret = orig.apply(sdk, [key, value]);
               if (fname === "WXStorageGetStringSync" && isGoodsKey(key) && typeof ret === "string" && ret.length > 5) {
                 ret = boostGoods(ret, fname + "读");
+              }
+              return ret;
+            };
+          })(name, fn);
+        }
+        // 数字读写：安装时间回溯必须在桥层做（storage.js 的 _cacheData
+        // 内存缓存绕过 wx.setStorage 层，只 hook wx 层的话 C# 读缓存拿到旧值）
+        else if (name === "WXStorageGetIntSync" || name === "WXStorageSetIntSync" ||
+                 name === "WXStorageGetFloatSync" || name === "WXStorageSetFloatSync") {
+          (function (fname, orig) {
+            sdk[fname] = function (key, value) {
+              if (typeof value === "number") {
+                value = tryBackdate(key, value);
+              }
+              var ret = orig.apply(sdk, [key, value]);
+              if (fname.indexOf("Get") === 0) {
+                ret = tryBackdate(key, ret);
               }
               return ret;
             };
