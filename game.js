@@ -1,27 +1,257 @@
-// ===== 离线模式拦截器（放在最顶部） =====
-const originalRequest = wx.request;
-wx.request = function(options) {
-  if (options.url && options.url.includes('login.do')) {
-    var fakeResponse = {
-      data: {
-        token: "offline_fake_token_1234567890",
-        openId: "offline_openid_test",
-        sessionKey: "offline_session_key",
-        firstLoginFlag: false,
-        loginTime: Date.now(),
-        code: "0"
-      },
-      statusCode: 200,
-      errMsg: "request:ok",
-      header: {}
-    };
-    if (options.success) options.success(fakeResponse);
-    if (options.complete) options.complete(fakeResponse);
-    return;
-  }
-  originalRequest(options);
+// ================================================================
+// 离线模式拦截器 v2 —— 2026-08-26 基于正式服抓包重写
+//
+// 功能：
+//   1. 绕过登录：login.do / decodeV2 回放抓包的真实响应（离线闭环）
+//   2. 云存档本地化：gusspro mini-data 全拦截
+//      - 上传(update)的加密存档会同时备份到 wx.setStorage 本地
+//      - 云端版本(version)永远回放抓包时刻 → 本地存档永远比云端新
+//        → 游戏永远使用本地存档，等于纯本地存储
+//   3. 免广告：激励视频"看完"秒回 isEnded:true 直接发奖；
+//      插屏/横幅静默展示（看不到广告但流程正常走）
+//   4. 埋点上报全部拦截，避免反编译环境被服务端风控盯上
+//
+// 资源 CDN（lfrjtxx-cou / sr-home cos）和微信自身请求保持放行。
+// 出问题时把 OFFLINE.LOG 改成 true 看 Console 拦截日志。
+// ================================================================
+var OFFLINE = {
+  ENABLED: true,        // 总开关
+  LOG: true,            // 拦截日志（稳定后改 false）
+  freeAd: true,         // 免广告（激励视频秒完成）
+  localSave: true,      // 云存档本地化
+  saveBackupCount: 3,   // update 存档在本地保留的份数
+  fakeOpenId: "oqHl119jj4V3IOGxovYqxEl_lnnI" // 抓包真实openid，勿改
 };
-// ==========================================
+
+// ---- 抓包回放数据（2026-08-26 15:42 正式服）----
+var REPLAY_LOGIN_TOKEN = "{\"token\":\"a7e051c693a3449fb9943e148c1b48df\",\"openId\":\"oqHl119jj4V3IOGxovYqxEl_lnnI\",\"sessionKey\":\"BCAIAFckKj1xSGd0SFRiQRkLTzUhNE5J\",\"KVDataList\":[],\"firstLoginFlag\":false,\"loginTime\":1787730129398,\"lastLoginTime\":1787726065000,\"code\":\"0\"}";
+var REPLAY_DECODE_V2   = "{\"code\":\"0\",\"msg\":\"sElo5AYICxUEyeSwnn+ZCQ==\"}";
+var REPLAY_MINI_AUTH   = "{\"encrypt\":\"/W3aBgVsjt+JC20VuJHAVJxmKkDTv30lFmptOhRlA6lfBryaCwEJiWJWaIcc7yuQxZkSlHoeW92BjSYvK0sge8sW70jE7DIhEhiuD5Tgqc3WN+7oDiopynkQwzB83NX7UYxDmoJIjX/DjBgIXcEfgXgQbcllcHF65hXhTz1gUC/xU4FLvL99MLG6gBxfRZHIVTZdtOck2dN63yZ967NW5bEP679v5J8XZyuo/beY6XQtg8hATkg/pWWaPxHN5qZurzXHmqoYBx95DckjRUwTduElQjIouS1jezPGv7x4GWomtoa3X2PrT8iBypsq9UjCloil53rk2bDURDhk7hWi6a5ajRdS6RM6fBsTe7CbyNBihiTFlajVrz5/6sot9N4zlmaCKmq/HfEdB5vhY/j/6v0ZZhDZV6i3VOKgu2yp/kU4ofnTzpcJHlA3Zjhn5ow4+HFKZUyMj3r3ZMtGnp+WTnGGzoVr/Y0u0USwvRkrm+TDLPJsnw85SgQiuRSKETWWVZenEbUvwyl9rJ2FXnzmbTuuKnLKU26omd1Igi46ny8CxVIT0+KihGW1QV71Ig1Nf9utKqa8/jGewmLlqFVJr9GJpKnpKv8w1XwQ35VNOQ79EWcusLhfi2Rb1/4GjDEp\"}";
+var REPLAY_MINI_VER    = "{\"encrypt\":\"/W3aBgVsjt+JC20VuJHAVLkz1x7kdc4/z+tYEVTU3YFi43fgmTFwKRnPyZC1xKL8vY/lwQoafMDbE8CpwveZ2TuJOBmzmkqyHZ+8ghvBvB9hFDv0ox4utAGfrblVTbCw8DskC7BOX8IxQqj7p8tnKA+EgI0zwDHuBqN9Jp/yJTK/anFOO9OC+nv4RYoKXmnRUvMfCenlFknjpPlZnCznYa4jUA81eNEJ4pbApsVhetScgICdIXEMWol6gZHqOwEPjNJPqG+BGjEeijKMsojNupkzIbxvatZEzu4HW1b24D66fFmGw615I8Puzj8GPz2OsjaG2aJ9STiVZtwwjR3gAdR6Q1DzWWDsINiqBOM2FsOXXE8a0GeR90CtNJYq6C51sOX2nPBAHfdfDV4EQcZfZj7cgGiZGIMKqN64b6dlV8D7dUJq86avdhNUynkoiZ5wr2EcivgxpPWBuoXEj7gF/VkwUFB3JzvPCzhO5j3aeJueTKd3KVJuNycZIK3bqBPaDhZ9bjz6skXRuzczPkEqe4xyPQyOP45UE119TsSzHz6V/s3wXAfCk2FKgqFfs2riTw6aF6HVkiphZielGrGKz3svGHEUDzkcUolj7fGerlqBU4CSROCszxLgdyQ/TIG0TEYatnpasK07yMgvPVjqXA==\"}";
+var REPLAY_MINI_UPD    = "{\"encrypt\":\"/W3aBgVsjt+JC20VuJHAVG9s+eU8/gqta61l/Yv6/QGQdKhg4ub+fu9e9T6VIJAjOWhftWWmWmm/O22Tfs//jdhfBVU1NWzgDEK9nuVl2JE=\"}";
+var REPLAY_ADZ_CFG     = "1mO78AhfO4TB/+E9X5DTiPzd/qRQQB8LfjzPKhBMcJ7O5zpcIqNlb32Ut2vCXDMt5xFRWeWIXTNH9Z2aDnvYcPxdp2MDfQ8QwX8Ungzirg5mYQCNWXsudKUJ4DmUiTFsQiwWS8mMQxH9JJLtar+rLWGh47CUL/RVL7GC0AVi03EaSnVi/pKEqh903hkW2UTejGaF9CMSEMAER3bTyUwkd6TzJ6ZoDCfd/UaZr2AoRdOvSkMZUdEYXe96cL02lBvB3Xn68lfjwjAx6oGevz+xFBtEWawKJDw7nO7dYjRyWhPOviHLsdQ5fTFcKF5F9Gm3ifjzxwps2LMJj3xtPA/QDcNTY2eduXuVwZj+vfMux+GsIc88yVFAXrmccHOnWVTYJwsJAeS/OZzEVF2YWEfd+lmDSrPD7PUR8KwgP1znfdxj1eBKm/EpjSESTdaiAW5Cp7uoquSE9ncGecO1fGU9GpzA/nEkrtZjGAc4pRwxhVRTh4JNxgqlfkm/C4sgCzjeDPtGW1tvnY8eJbNaACcViCyrEB8S5gAq00rV583gzXU6s/PO2VUSAWPC5vFIK7Iin5mBfgti63K26O/nXkvH8kOOzbdcMHZrFPyMS7pvymmq1cNC9Un5L22Hlfp8OClxFjo7/kcj/B0Mecu8UtVjTb0/1klTn4ul6tmA+t2yYqTyUa9AfFrGAB4/1/9bhuRqKLaetPAu06lEcujI+uNPuW8zg8n3FhwIgxSHrN6zbDjYBuq6LGYcKnL82sOno7R0ZnSoMOAxwDYzhU209u2zLy7WxPPwVhAtrFq7BRI6VNSmNbiRB1qi0LBKuMoRdRqWWpqt1WsTgArfKyFp8dH0wCTjRhYphzNea6Io4406hmEExClbpNT5c7484ax/v81HJkM0TWipbQve8V8P+xmlICkcg2uJuBriLkZeJnWlfFMxZw4LSmgxNURYeQXSs+v0mANNvcJJi+mIIWy2MuYQxVSEuIult7/xViXEDLjswn1Rmq6Q86c8dsFHnlphOWo89e9eWY2STYy7VYqwj50ZxvlVeDXjmvSSR3K9obpaoibaHczk7QwYZJaxAlkkBO1X18yzA1FvAbG9V+G0Rm8KIEL4cQz4Qh7VANdPb3D1dSQxxlaslvY/P3949sXev0T0UzUjn0G1RDiicZMZXd3LXYW2JeASUyhAQfjoBVxbeOwKW+Kcm/cKqypwP99Uz7EQbdeTB0ne35s49Wb3bceiIoY5QfsdX8CEj+mlr6atJ+/pjd3hsbmm4JINeAKXdDLSiYt6wMa2sQKcl4T/DMSOjwg7gOjIjfMXyylL2XH3XWVjFJAqryCQ8TalxQMeAOuT4cc/VnVGBNgw/3FAMaD6araQDFzzLn0AivEyTBWaRV7CVxv6eXxYc60McCS0Ls5X7D/LLfKwjFCRjE3ezGJWO3zyb2xFUJxgDL4PpSmWpTxYEB7Zfm+tSpJSeqROd/Vv88dapgV7aML+Z+81YJ1pi93iSh9s3kkf0dKOUoZ6NB0Lc2NG3KmDOLWjHTG8zorABGXYYXsdw5tNVxRjwJ/SBgiRVbd0PZJAezw29dsb7HltmA9pqRB9Ux+WqNbnnhPsE+vrlTqoxPRfRCl4YT7lBqnHCRLA++jfelM84VTl8I3k8nlMi7paCtt8q9BhCKROa/pTiyojJnzmrVTU1vPzn4EsxCnPJMgGCy8BDh49IvX2u+ARHjI8YA7JIQu6l+eyUXNB50IC5z1ozYSH5IsUKXMxcgsm5DyBoqzcQn7VgJ1PcS1fjUXOURfTp9H1uLXzbxjocKEJlagGvONLzS3Eim2/XaAv5HuH+zXME20jcIpINafdbG0DqcqYwhafff6OMwYYMhZSbkndK6jLr2298J7lfcE5vucaWM1jMHpvYHg6oCca4OLgEQbWpxuS3GyiFkt/yKRH7ySWGzujvmF5ZLsU9sVIItaNPTIZ3luaW0q9gOm9ehwR7iwicZhyMpXVJ60Kzt5mZz+ULxLSm3Qws85GISZ+UwSnG12rXgl0y3n65ph3cv+oTzKmb4H+E+ZceT8cS187Pl2mHVWpY2KGJdrAI8tzPYXjbOIPJ6H8v738SfJrvb1waACESok1UYZNRBR+LfZLZj5F/sfUOs+R6TNNq63cfvTREg6WqLVF2LMRPn236hN67bcd28GkMy4z6S2GoFLOlQXejlQu9jI6bucyJIC/qW5cpsnXXdJb0nSncBkrmQ9ZY7urHYXqhxC5dx0AAffHo79an9PpK/LC8zvA5DCxJeFKrWC6an2AunFeXTIFJYPpJAHtZ9YbMGIYkvQztkdhy1/rlnMfRC4MPLaJeDf2gqUvkJ7u8rH/dkDJO2ZXnAKFOlfcSKjGIDEOsUwOWQziEBUU36B48LaTbSTj2vAJY4QbULyXMVJKPTeczQOmfw3cZJkTSmnIH7GX/ZOi/lz0Pg4fxbcDlD80QkQFPyUpWoIk1CNX2EeAZa5n1LfrOaDCKWLg0bXjSo5mlUaw8lIebzcUkbbyYjMy3dqreWC2jwold3hpjIkvta0z+o7qkO91jnCWv6vXJVpoRE1uqrjx9NPHAZHgJ4bDJ5pg91zJtjg7107XIaEpkeCVMweFOO+zcew2sLBeka+MoUhRaLegGCgzFlTGCwpezwE6l7T9gD9AKEngMWd/JTaxoh82lp3mVRz4Y9OmSwPKL5s/WhHebV82uM4wOVNk/UwvmGDQ+pk5S20SbBUEAkT0IK6LMmngam2tnkbQPB0t1EYgxA86uSb/GDy8wH5L4WYZmq464SFYg+smDFhzcLiNupuNU80iYz/sNOVPTOnqnJ884EgEtSiTTlGj1uqXl4De3QWjszkZlEuPxH0rU5MACaG7I9t6hAIlz9mBBV6gEg+lDnp0SqUClsuyoGyT85Zlu2q1ufv4anNxg+5tvz7Nvj07kq+98vhhHa62wDU6Wix5F++4h1odyjiSEKplMV/HUgfaW+41RItbxYa+pjHw06acbjhNKyOdNAUcbfCI/IHmn+eactuIteloz5kiUBpbK4WQS9OugSrTBZltswPwkcPv/VL7Wyvd5TOoCrRH1Da7/K0rVrLVjrOOcWFPChb2/QYyNQ7XJuJQpGcZQ/QORHb0KZJswulmESwVC4NEUl6Fmz1V5sqtEYtviX8nQHj8Wm364YCmxzyx0RDmII1UMJ5l91ipJ0/xvxZNoPPtRHJig9l3OwCZH6XD0i3KYyfWZvJDWQ1o4tU1KFLaF4nD3VHKWjxMJt6xvKhVFfK6oQuEdCO4u2kDtVZr+WpyQwRT5RskYGfl7cHn2e+kEgHtilmsRD59AYPslL1z1HqMWdN+jhGjdCrckoOg+TnSPnA09twTyx0TZlGiiuvPP/FgXLGy5+TUSJmF8Zh7nSw6pQbtBUddQnGruJFps1KP/222NiqWQRZlNnrrQI8hLydeg2t9jNWNb3mNZKh0yDmJ0Gi/MxZ/VRhKilyV8EUE70TEPyyKR/Cs6FV/ln6Lr2OvyRIPvP1P+59yj4QMtxJ4J9OtT8SR3N9UOLSm7Zlz3J4Km7vJVr9Po5+86nKKqMDArtApps8w0FkMsmC/dZktM5Ep5FbmeQ/x8VKXICvAqJBdV83uw0xb1pjv+KwuLENEMn7QXe0Ap0u5JH34V4SDjT9u2AJtTTcYxue95nx8ExC+WIjo9SUogvmyxzvMm1ZNWIxbNOwpqPCTMGEz8z/+1ANpMlUq1FAMFa5kPOU/mFTGEkDB1apsTTil8U72OpAm96a7DfRGs+NRV0ALn3mrInK11Z/BF8t3xyjHL4KavjlICO8EMWLpP+Ti8BK3uaw2W8DrRZbUwAk2C7VGGQ6v0LRB2zxSjaHMZvH4R8PXxr78X1NWtXVbXtPyTIOAT92v58L+YGU2IdFsac3GlYqoW650l5IsRe/JNBUrsfCyvJu/j6oBCUQHVoD06WsTYCcAGJq/HcU3dssw9aW1PwW2YRIqHwgMBbWhdW4CbnDESsot7JNTZjscXjmRCRHEsRXkMxxP0Hfh/WP43KFLHOHNVBP8LuTSAkbhv1Oj+TMZH7G+mNozmuUEuhe72IzsgKR34zds846GmxdzsLOSl3rmbqbJeoFYmiIbToY9kC9Xd2bruPGQTqPgFQGtJuIbg1kzyMZUvIuqxtFxuxdgDU6+"; // 广告位配置(base64)
+var REPLAY_DBT_CFG     = "a1HvihfUBot4RTl9/yT9+phfTo22XOwU8TwP8frVgemHiDEki+BaLgRZZDwaMKWKF7w1EhmDl6uI3SyA8kUOukfDND9iIDeVm0vNYm+kmI4yccS1cTgi+cdn/vGjiAmSC6/upkHIb5e1zErinKkmN6JlufW2KfY7K7j/GIb3yAjdjRWgri74uorlKknD4thsgYoma1QSm+b0OBCnnk5nvk7Dx9MqHjK+qxcQ1NpnhhFml4s8Da1Vt5GtOnZ/N2ZdOf8eAl4YasPtItDd8iX0VwwC1nIl/FYOxj/R0CLN45hsHKoxGFDkIitorcmuUxo1odBcXkwS6gKSlXiJXvjYc/u5xRl7FFKgddQMjRPPc4QUMVADCFX37DyPHTbHo7VIbIW/ym2ygTdwTXPSGICBaBlhsT/vWTEhKuast4z/epop4UxwnyTO3icx42bP3j6FsGfs6gxMUR2fmP9VTS5QLDi5ZPWTFP7IStQtqC7cIuMy0763ZpLYB56+fVFQt1SXYCoKdjHKXd1D40ASdBWghitkQaggMKDCGJkd5D11uLC9FGnQtFvsNEevnDVMrxyVbJ0Oisiyg6jModbnu9LcR67px87F0LtOjsxR49ZA1zJHY+kRKO2dTsUxjaWTpwqKIzJDyXz0Kk48e6KId1GHFlL1/SuXXlazHbYrWCLNaUAd9FyPx6/dv5v3yZfzB07v1rbpM/odJE46jmlg0lX08FWhR97ZGyQ64fTv4YkMBXTUpeSt5faUVWzfm/f2/c4V6tPv3Ubbcz+1J0rYESwXMnZBkNvxE63JovBkURunt/NlUhlLKyxXODoxgFswfVfcGO31fDs4m/kTn3qo1AziVgyYH3DMDJo8RTKE8rnla3QWgn7Moex2B2jMq3Ey6f4SFAUJE2AKt/R/84z8t9tOGtkyyNs3ptm3qhyA25XqvQH9pVl1z3H265I+pbV6AzS+mOwpdAvpwLtxoKgvtYr5g/2zKxk48stTQxnhQLmwxbWO86gahBWtF9G2D+h+aAbh3pbtoppBTfCCvB+4LaLQ8DniHDQ4bTjo2VMlf4ZoHlZDCLp2nmuAa4Uo6gVkG4PczjXnxQINzouMF52PAXH+FILbwSD9PG9zDjGJa4tqltkUTYpLLs3ZeH817Rhd/4Wznh6s/NTGDP5cepKEYofKZJmhu02gADXaCz6DCIjbrVw+5BGA4wDYLrIearq7o1DHP+sT0OsCagg4WP7PN7b79XvIdN64XEqhv/RF1IZ6Cj4X4/nlVTn9vnYifi9u1CkMtOKd3thQJgrWwX7b27mzKnRuuYwmcTtF30RWTDXZau08ie26IsFpaAIGnrVONlXDPDluOGlNL0aT5bTnuXxrAZO594l0VUlhhllJKHgAZaL3gNlivLHfUXUp7mLstAMIM/pK8x94IosRAMlpNEBAtAnQA2vCUUdBBjOEgMLn4q7EzHeP/qI1+tZWcP3ECXQF7I/NghXcbu2OJ45ijBFkT9Ezim/iyCGlXkfrk/lfptW3xcIq1BBJFLjC1eHlIgn7zyMeMktSHwFBrspzTK4GxkNRrXWXyFrRQ8bUMFEXs81CVZVpl+BhK3+IoTK3+WMP+bn96Z48oEIvxAzGN+n4+onUU7nDfXr7Ec3POfglOJMPGRdJzHuhDp+aiGl1NXxwWuSusuQhDZtajLmxTrkwIS5inuIOfrPC4kyQpeZyNi7vZ4pgYXPjZgRaMj2sI6Rpvtr4jqPniOOOlpxKa02YCV6rtfQZ+wVH9fl4kfl6906w+HQPeCShJMlpQ+czTl289KLCIBwbeCTVA75lUpVgQs/WSMouGqmWsk6DK6sbV0X5ERcO18Hs2UKyAG8rNY9MyChG7dCXGF2IFnNjjStCLw=="; // 远程参数配置(base64)
+
+function offlineLog(tag, msg) {
+  if (OFFLINE.LOG) console.log("[OFFLINE][" + tag + "] " + (msg || ""));
+}
+
+// 构造 wx.request 风格的响应对象，data 一律用字符串
+// （weapp-adapter 的 XHR 会原样赋给 responseText，和真实服务器行为一致）
+function fireSuccess(options, dataStr, delay) {
+  var resp = {
+    data: dataStr,
+    statusCode: 200,
+    errMsg: "request:ok",
+    header: { "Content-Type": "application/json; charset=utf-8", "Server": "offline" },
+    cookies: []
+  };
+  setTimeout(function () {
+    try {
+      if (options.success) options.success(resp);
+    } finally {
+      if (options.complete) options.complete(resp);
+    }
+  }, delay || 0);
+  return { abort: function () {} };
+}
+
+// login.do 响应（loginTime 动态化，其余字段与真实服务器一致）
+function buildLoginResp() {
+  var o = JSON.parse(REPLAY_LOGIN_TOKEN);
+  o.loginTime = Date.now();
+  o.lastLoginTime = Date.now() - 3600000;
+  return JSON.stringify(o);
+}
+
+// mini-event 弹窗：永远返回空列表（无弹窗）
+function buildMiniEventResp(options) {
+  var category = "";
+  try {
+    var body = typeof options.data === "string" ? JSON.parse(options.data) : options.data;
+    if (body && body.category) category = body.category;
+  } catch (e) {}
+  return JSON.stringify({ msg: "OK", code: 0, data: [], category: category });
+}
+
+// gusspro 存档上传：本地备份 + 回放成功响应
+function handleSaveUpload(options) {
+  if (OFFLINE.localSave && typeof options.data === "string" && options.data.length > 2) {
+    try {
+      var backups = wx.getStorageSync("offline_save_backups") || [];
+      backups.push({ time: Date.now(), data: options.data });
+      while (backups.length > OFFLINE.saveBackupCount) backups.shift();
+      wx.setStorageSync("offline_save_backups", backups);
+      offlineLog("SAVE", "云存档已本地备份 #" + backups.length + " (" + options.data.length + "B)");
+    } catch (e) {
+      offlineLog("SAVE", "本地备份失败: " + e);
+    }
+  }
+  return fireSuccess(options, REPLAY_MINI_UPD);
+}
+
+// ---- wx.request 拦截 ----
+var __originalRequest = wx.request;
+wx.request = function (options) {
+  if (!OFFLINE.ENABLED || !options || !options.url) {
+    return __originalRequest(options);
+  }
+  var url = options.url;
+
+  // 1. 登录服务器 azory（login.do / decodeV2）
+  if (url.indexOf("azory.lumosfun.com") >= 0) {
+    if (url.indexOf("login.do") >= 0) {
+      offlineLog("LOGIN", "login.do -> 回放真实登录态");
+      return fireSuccess(options, buildLoginResp());
+    }
+    if (url.indexOf("decodeV2") >= 0) {
+      offlineLog("LOGIN", "decodeV2 -> 回放解密结果");
+      return fireSuccess(options, REPLAY_DECODE_V2);
+    }
+  }
+
+  // 2. 云存档/事件服务 gusspro
+  if (url.indexOf("gusspro.com") >= 0 && url.indexOf("/mini-data/") >= 0) {
+    if (url.indexOf("auth/login") >= 0) {
+      offlineLog("SAVE", "mini-data auth/login -> 回放");
+      return fireSuccess(options, REPLAY_MINI_AUTH);
+    }
+    if (url.indexOf("data/private/version") >= 0) {
+      offlineLog("SAVE", "mini-data version -> 回放（云端版本冻结，本地存档优先）");
+      return fireSuccess(options, REPLAY_MINI_VER);
+    }
+    if (url.indexOf("data/private/update") >= 0) {
+      return handleSaveUpload(options);
+    }
+    if (url.indexOf("sys/nowTime") >= 0) {
+      return fireSuccess(options, JSON.stringify({
+        code: 0,
+        data: { ef: false, version: "wpHCjWPCh8KNaMKSb8KGwoVTwoB3cWXCl01I", nowTime: Date.now() },
+        msg: "OK"
+      }));
+    }
+    // 其他 mini-data 接口一律按成功空数据处理
+    offlineLog("SAVE", "mini-data 其他接口 -> 通用成功");
+    return fireSuccess(options, JSON.stringify({ code: 0, msg: "OK", data: {} }));
+  }
+  if (url.indexOf("gusspro.com") >= 0 && url.indexOf("/mini-event/") >= 0) {
+    offlineLog("EVENT", "mini-event -> 无弹窗");
+    return fireSuccess(options, buildMiniEventResp(options));
+  }
+
+  // 3. 埋点/上报类（拦掉，避免风控；失败也不影响游戏）
+  if (url.indexOf("jajsy.lumosfun.com") >= 0 || url.indexOf("gjyxkvuxz.lumosfun.com") >= 0) {
+    offlineLog("REPORT", url.split("/")[3] || "");
+    return fireSuccess(options, '{"code":"0","msg":""}');
+  }
+  if (url.indexOf("wjrtyjhkl.lumosfun.com") >= 0) {
+    offlineLog("REPORT", "DbtRemoteConfig -> 回放远程配置");
+    return fireSuccess(options, REPLAY_DBT_CFG);
+  }
+  if (url.indexOf("fixhkl.lumosfun.com") >= 0) {
+    offlineLog("REPORT", "getAdzCfg -> 回放广告配置");
+    return fireSuccess(options, REPLAY_ADZ_CFG);
+  }
+  if (url.indexOf("backend.gravity-engine.com") >= 0) {
+    var body = "";
+    if (url.indexOf("user/initialize") >= 0) {
+      body = JSON.stringify({ data: { token: OFFLINE.fakeOpenId }, extra: {}, code: 0, msg: "成功" });
+    } else {
+      body = JSON.stringify({ data: {}, extra: { error: "", errors: [] }, code: 0, msg: "成功" });
+    }
+    offlineLog("REPORT", "gravity-engine -> 通用成功");
+    return fireSuccess(options, body);
+  }
+  if (url.indexOf("api.datanexus.qq.com") >= 0) {
+    if (url.indexOf("config/get") >= 0) {
+      body = JSON.stringify({ code: 0, data: { noClaimActionList: ["TICKET", "ENTER_FOREGROUND", "ENTER_BACKGROUND"], channelClaimActionList: ["REGISTER", "START_APP", "RE_ACTIVE"], realTimeActionList: ["START_APP", "REGISTER", "PURCHASE", "RE_ACTIVE"], ticketInterval: 60, requestTimeout: 30000 }, trace_id: "offline" });
+    } else {
+      body = JSON.stringify({ code: 0, message: "ok", trace_id: "offline", data: { code: 0, message: "ok", trace_id: "offline" } });
+    }
+    offlineLog("REPORT", "datanexus -> 通用成功");
+    return fireSuccess(options, body);
+  }
+
+  // 4. 其他（资源CDN / 微信自身）→ 放行真实请求
+  return __originalRequest(options);
+};
+
+// ---- 免广告：hook 广告创建 API ----
+(function hookAds() {
+  if (!OFFLINE.freeAd) return;
+
+  function off(list, cb) {
+    if (!cb) { list.length = 0; return; }
+    var i = list.indexOf(cb);
+    if (i >= 0) list.splice(i, 1);
+  }
+
+  // kind: rewarded / interstitial / banner
+  function createFakeAd(kind) {
+    var cbs = { load: [], error: [], close: [], resize: [] };
+    function fire(name, arg) {
+      var list = cbs[name].slice();
+      for (var i = 0; i < list.length; i++) {
+        try { if (list[i]) list[i](arg); } catch (e) { console.error("[OFFLINE][AD] 回调出错", e); }
+      }
+    }
+    var ad = {
+      style: { left: 0, top: 0, width: 320, height: 50, realWidth: 0, realHeight: 0 },
+      onLoad: function (cb) { cbs.load.push(cb); return ad; },
+      onError: function (cb) { cbs.error.push(cb); return ad; },
+      onClose: function (cb) { cbs.close.push(cb); return ad; },
+      onResize: function (cb) { cbs.resize.push(cb); return ad; },
+      offLoad: function (cb) { off(cbs.load, cb); return ad; },
+      offError: function (cb) { off(cbs.error, cb); return ad; },
+      offClose: function (cb) { off(cbs.close, cb); return ad; },
+      offResize: function (cb) { off(cbs.resize, cb); return ad; },
+      load: function () {
+        return new Promise(function (resolve) {
+          setTimeout(function () { fire("load"); resolve(); }, 0);
+        });
+      },
+      show: function () {
+        return new Promise(function (resolve) {
+          setTimeout(function () {
+            resolve(); // 展示成功
+            if (kind === "rewarded") {
+              // 80ms 后"看完"关闭，isEnded:true = 完整观看 → C# 直接发奖
+              setTimeout(function () {
+                offlineLog("AD", "激励视频秒完成，发放奖励");
+                fire("close", { isEnded: true, endType: 0 });
+              }, 80);
+            }
+          }, 30);
+        });
+      },
+      hide: function () { return Promise.resolve(); },
+      destroy: function () {},
+      getProvider: function () { return "fake"; }
+    };
+    // 创建即异步触发一次加载成功（部分逻辑会等 onLoad 再 show）
+    setTimeout(function () { fire("load"); }, 0);
+    return ad;
+  }
+
+  var origRewarded = wx.createRewardedVideoAd;
+  wx.createRewardedVideoAd = function (opts) {
+    offlineLog("AD", "createRewardedVideoAd -> 免广告模式");
+    return createFakeAd("rewarded");
+  };
+  var origInterstitial = wx.createInterstitialAd;
+  wx.createInterstitialAd = function (opts) {
+    offlineLog("AD", "createInterstitialAd -> 静默插屏");
+    return createFakeAd("interstitial");
+  };
+  var origBanner = wx.createBannerAd;
+  wx.createBannerAd = function (opts) {
+    offlineLog("AD", "createBannerAd -> 静默横幅");
+    return createFakeAd("banner");
+  };
+})();
+
+offlineLog("INIT", "离线模式已启用（登录绕过 + 本地存档 + 免广告）");
+
 require("./weapp-adapter"), require("./events"), require("./texture-config");
 var e = o(require("./unity-namespace"));
 require("./wasm-split"), require("./webgl.wasm.framework.unityweb"), require("./unity-sdk/index");
