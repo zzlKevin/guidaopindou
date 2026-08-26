@@ -1,3 +1,27 @@
+// ===== 离线模式拦截器（放在最顶部） =====
+const originalRequest = wx.request;
+wx.request = function(options) {
+  if (options.url && options.url.includes('login.do')) {
+    var fakeResponse = {
+      data: {
+        token: "offline_fake_token_1234567890",
+        openId: "offline_openid_test",
+        sessionKey: "offline_session_key",
+        firstLoginFlag: false,
+        loginTime: Date.now(),
+        code: "0"
+      },
+      statusCode: 200,
+      errMsg: "request:ok",
+      header: {}
+    };
+    if (options.success) options.success(fakeResponse);
+    if (options.complete) options.complete(fakeResponse);
+    return;
+  }
+  originalRequest(options);
+};
+// ==========================================
 require("./weapp-adapter"), require("./events"), require("./texture-config");
 var e = o(require("./unity-namespace"));
 require("./wasm-split"), require("./webgl.wasm.framework.unityweb"), require("./unity-sdk/index");

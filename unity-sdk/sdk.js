@@ -57,7 +57,11 @@ exports.default = {
         return n.toLowerCase()
       })),
       u = (0, o.formatJsonStr)(i);
-    "login" === s ? u.timeout || delete u.timeout : "reportScene" === s && GameGlobal.manager && GameGlobal.manager.setGameStage && GameGlobal.manager.setGameStage(u.sceneId), wx[s](t(t({}, u), {}, {
+      //--------------------------------------------
+      //这是原版：
+      "login" === s ? u.timeout || delete u.timeout : "reportScene" === s 
+    && GameGlobal.manager && GameGlobal.manager.setGameStage &&
+     GameGlobal.manager.setGameStage(u.sceneId), wx[s](t(t({}, u), {}, {
       success: function(t) {
         (0, o.formatResponse)(r, t), e.default.send("".concat(n, "Callback"), JSON.stringify({
           callbackId: f,
@@ -80,6 +84,50 @@ exports.default = {
         }))
       }
     }))
+    //--------------------------------------------
+      // if ("login" === s) {
+      //   // 伪造登录成功，不再调用 wx.login
+      //   var fakeRes = { code: "offline_fake_code", errMsg: "login:ok" };
+      //   // 触发 success
+      //   (0, o.formatResponse)(r, fakeRes);
+      //   e.default.send("".concat(n, "Callback"), JSON.stringify({
+      //     callbackId: f,
+      //     type: "success",
+      //     res: JSON.stringify(fakeRes)
+      //   }));
+      //   // 触发 complete
+      //   (0, o.formatResponse)(c, fakeRes);
+      //   e.default.send("".concat(n, "Callback"), JSON.stringify({
+      //     callbackId: f,
+      //     type: "complete",
+      //     res: JSON.stringify(fakeRes)
+      //   }));
+      // } else {
+      //   // 其他 API 保持原逻辑
+      //   wx[s](t(t({}, u), {}, {
+      //     success: function(t) {
+      //       (0, o.formatResponse)(r, t), e.default.send("".concat(n, "Callback"), JSON.stringify({
+      //         callbackId: f,
+      //         type: "success",
+      //         res: JSON.stringify(t)
+      //       }))
+      //     },
+      //     fail: function(t) {
+      //       (0, o.formatResponse)(a, t), e.default.send("".concat(n, "Callback"), JSON.stringify({
+      //         callbackId: f,
+      //         type: "fail",
+      //         res: JSON.stringify(t)
+      //       }))
+      //     },
+      //     complete: function(t) {
+      //       (0, o.formatResponse)(c, t), e.default.send("".concat(n, "Callback"), JSON.stringify({
+      //         callbackId: f,
+      //         type: "complete",
+      //         res: JSON.stringify(t)
+      //       }))
+      //     }
+      //   }));
+      // }
   },
   WX_OneWayNoFunction_v: function(n) {
     d(n)
