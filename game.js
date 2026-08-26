@@ -20,9 +20,21 @@ var OFFLINE = {
   freeAd: true,         // 免广告（激励视频秒完成）
   localSave: true,      // 云存档本地化
   saveBackupCount: 3,   // update 存档在本地保留的份数
+  goodsCheat: true,     // 道具/体力/无限体力buff 作弊
   sniffNet: true,       // 网络嗅探：透传请求的响应预览（定位广告/配置问题用）
   sniffStorage: true,   // 存储嗅探：记录所有本地写入（定位道具数量key用）
+  sniffBridge: true,    // C#→JS 桥调用嗅探（广告初始化诊断用）
   fakeOpenId: "oqHl119jj4V3IOGxovYqxEl_lnnI" // 抓包真实openid，勿改
+};
+
+// 道具作弊参数
+var GOODS = {
+  staminaId: 1002,          // 体力
+  unlimitedBuffId: 1003,    // 无限体力buff（签到送的10分钟道具同款）
+  staminaCount: 999,        // 体力保持值
+  itemCount: 99,            // 道具(2002~2004等)保持值
+  buffCount: 99,            // buff道具持有数
+  buffEndTime: 4102444800000 // buff到期时间 = 2100年（永久）
 };
 
 // ---- 抓包回放数据（2026-08-26 15:42 正式服）----
@@ -92,27 +104,78 @@ function handleSaveUpload(options) {
   return fireSuccess(options, REPLAY_MINI_UPD);
 }
 
-// 透传请求的响应嗅探（只加日志，不改行为）
+// ---- 道具/体力/无限buff 作弊 ----
+// vyGoodsModel 结构（用户实测确认）：
+//   {"propList":[{"id":1003,"count":0,"endTimeStamp":0},{"id":1002,"count":90,...},
+//                {"id":2002..2004,...道具...}, ...可能还有其他字段}
+var __goodsLogCount = 0;
+function isGoodsKey(key) {
+  return typeof key === "string" && key.indexOf("pdpx_vyGoodsModel") === 0;
+}
+function boostGoods(jsonStr, source) {
+  if (!OFFLINE.goodsCheat || typeof jsonStr !== "string" || jsonStr.length < 5) return jsonStr;
+  try {
+    var o = JSON.parse(jsonStr);
+    if (!o || !o.propList) return jsonStr;
+    var list = o.propList;
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i];
+      if (!p || typeof p.id !== "number") continue;
+      if (p.id === GOODS.staminaId) {
+        if (p.count < GOODS.staminaCount) p.count = GOODS.staminaCount;      // 体力999
+      } else if (p.id === GOODS.unlimitedBuffId) {
+        if (p.count < GOODS.buffCount) p.count = GOODS.buffCount;            // buff道具99个
+        if (!p.endTimeStamp || p.endTimeStamp < Date.now()) p.endTimeStamp = GOODS.buffEndTime; // 永久生效
+      } else if (p.id >= 2000) {
+        if (p.count < GOODS.itemCount) p.count = GOODS.itemCount;            // 所有道具99
+      }
+    }
+    var out = JSON.stringify(o);
+    if (__goodsLogCount < 6) {
+      __goodsLogCount++;
+      offlineLog("CHEAT", "道具已加满(" + source + "): " + out.slice(0, 240));
+    }
+    return out;
+  } catch (e) {
+    offlineLog("CHEAT", "解析失败(" + source + "): " + e);
+    return jsonStr;
+  }
+}
+
+// 透传请求的响应嗅探（只加日志，不改行为；成功/失败都记录）
 function sniffRequest(options) {
-  if (!OFFLINE.sniffNet || !options || !options.success) return options;
-  var origSuccess = options.success;
+  if (!OFFLINE.sniffNet || !options) return options;
   var wrapped = {};
   for (var k in options) wrapped[k] = options[k];
-  wrapped.success = function (res) {
-    try {
-      var data = res && res.data, preview;
-      if (typeof data === "string") {
-        preview = data.length > 100 ? data.slice(0, 100) + "...(" + data.length + "B)" : data;
-      } else if (data instanceof ArrayBuffer) {
-        preview = "(binary " + data.byteLength + "B)";
-      } else {
-        preview = JSON.stringify(data);
-        if (preview && preview.length > 100) preview = preview.slice(0, 100) + "...";
-      }
-      offlineLog("NET", (res && res.statusCode || "?") + " " + options.url.slice(0, 100) + " => " + preview);
-    } catch (e) {}
-    origSuccess(res);
-  };
+  if (options.success) {
+    var origSuccess = options.success;
+    wrapped.success = function (res) {
+      try {
+        var data = res && res.data, preview;
+        if (typeof data === "string") {
+          preview = data.length > 100 ? data.slice(0, 100) + "...(" + data.length + "B)" : data;
+        } else if (data instanceof ArrayBuffer) {
+          preview = "(binary " + data.byteLength + "B)";
+        } else {
+          preview = JSON.stringify(data);
+          if (preview && preview.length > 100) preview = preview.slice(0, 100) + "...";
+        }
+        offlineLog("NET", (res && res.statusCode || "?") + " " + options.url.slice(0, 100) + " => " + preview);
+      } catch (e) {}
+      origSuccess(res);
+    };
+  }
+  if (options.fail) {
+    var origFail = options.fail;
+    wrapped.fail = function (err) {
+      offlineLog("NETFAIL", options.url.slice(0, 100) + " => " + (err && err.errMsg));
+      origFail(err);
+    };
+  } else {
+    wrapped.fail = function (err) {
+      offlineLog("NETFAIL", options.url.slice(0, 100) + " => " + (err && err.errMsg) + " (无fail回调)");
+    };
+  }
   return wrapped;
 }
 
@@ -123,6 +186,11 @@ wx.request = function (options) {
     return __originalRequest(options);
   }
   var url = options.url;
+  // 所有非CDN请求的入口日志（诊断广告初始化用）
+  if (OFFLINE.LOG && url.indexOf("lfrjtxx-cou") < 0 && url.indexOf("myqcloud") < 0) {
+    var shortUrl = url.length > 110 ? url.slice(0, 110) + "..." : url;
+    offlineLog("REQ", (options.method || "GET") + " " + shortUrl);
+  }
 
   // 1. 登录服务器 azory（login.do / decodeV2）
   if (url.indexOf("azory.lumosfun.com") >= 0) {
@@ -165,14 +233,24 @@ wx.request = function (options) {
     return fireSuccess(options, buildMiniEventResp(options));
   }
 
-  // 3. 广告系统相关服务器（adscfg/adsreport/远程配置/事件上报）→ 透传真实服务器
-  //    ⚠️ 不能拦！这些接口的响应是加密的，伪造数据会导致 C# 解密失败
-  //    （"Bytes is invalid"→ 广告系统初始化中断 → 广告永远"未准备好"）。
-  //    透传只用于配置下载和埋点上报，无风控风险；免广告由广告 API hook 层实现。
-  if (url.indexOf("jajsy.lumosfun.com") >= 0 ||
-      url.indexOf("gjyxkvuxz.lumosfun.com") >= 0 ||
-      url.indexOf("wjrtyjhkl.lumosfun.com") >= 0 ||
-      url.indexOf("fixhkl.lumosfun.com") >= 0 ||
+  // 3. 广告系统相关服务器（分流策略，2026-08-26 实测调整）：
+  //    - getAdzCfg(fixhkl)/DbtRemoteConfig(wjrtyjhkl)/EventStatServ(jajsy)：回放抓包
+  //      响应（v2 实测可正常解密初始化广告系统；实时透传反而导致广告系统休眠）
+  //    - UserStatServ(gjyxkvuxz)/adsapi/adsbidding/attribution：透传真实服务器
+  //      （响应加密无法伪造，让真实服务器应答）
+  if (url.indexOf("fixhkl.lumosfun.com") >= 0) {
+    offlineLog("ADS", "getAdzCfg -> 回放广告配置");
+    return fireSuccess(options, REPLAY_ADZ_CFG);
+  }
+  if (url.indexOf("wjrtyjhkl.lumosfun.com") >= 0) {
+    offlineLog("ADS", "DbtRemoteConfig -> 回放远程配置");
+    return fireSuccess(options, REPLAY_DBT_CFG);
+  }
+  if (url.indexOf("jajsy.lumosfun.com") >= 0) {
+    offlineLog("ADS", "EventStatServ -> 回放成功响应");
+    return fireSuccess(options, '{"code":"0","msg":""}');
+  }
+  if (url.indexOf("gjyxkvuxz.lumosfun.com") >= 0 ||
       url.indexOf("fixfun.lumosfun.com") >= 0 ||      // adsapi
       url.indexOf("fixgniinsl.lumosfun.com") >= 0 ||  // adsbidding
       url.indexOf("fyywngzynts.lumosfun.com") >= 0) { // attribution
@@ -203,17 +281,22 @@ wx.request = function (options) {
   return __originalRequest(sniffRequest(options));
 };
 
-// ---- 存储嗅探：记录所有本地写入（找道具/体力/时间的存储key）----
-(function sniffStorage() {
-  if (!OFFLINE.sniffStorage) return;
+// ---- 存储 hook：写入加满道具 + 读取也加满 + 嗅探日志 ----
+(function hookStorage() {
+  // 写入：道具模型在写入时自动加满（C#写回扣减后的值也会被补回999/99）
   var origSet = wx.setStorage;
   if (origSet) {
     wx.setStorage = function (o) {
       try {
-        var v = o && o.data;
-        var s = typeof v === "string" ? v : JSON.stringify(v);
-        if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
-        offlineLog("STOR", "SET " + (o && o.key) + " = " + s);
+        if (o && isGoodsKey(o.key) && typeof o.data === "string") {
+          o.data = boostGoods(o.data, "setStorage");
+        }
+        if (OFFLINE.sniffStorage) {
+          var v = o && o.data;
+          var s = typeof v === "string" ? v : JSON.stringify(v);
+          if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
+          offlineLog("STOR", "SET " + (o && o.key) + " = " + s);
+        }
       } catch (e) {}
       return origSet.call(wx, o);
     };
@@ -222,11 +305,47 @@ wx.request = function (options) {
   if (origSetSync) {
     wx.setStorageSync = function (k, v) {
       try {
-        var s = typeof v === "string" ? v : JSON.stringify(v);
-        if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
-        offlineLog("STOR", "SETSync " + k + " = " + s);
+        if (isGoodsKey(k) && typeof v === "string") {
+          v = boostGoods(v, "setStorageSync");
+        }
+        if (OFFLINE.sniffStorage) {
+          var s = typeof v === "string" ? v : JSON.stringify(v);
+          if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
+          offlineLog("STOR", "SETSync " + k + " = " + s);
+        }
       } catch (e) {}
       return origSetSync.call(wx, k, v);
+    };
+  }
+  // 同步读取：道具模型读取时加满（启动加载存档即生效）
+  var origGetSync = wx.getStorageSync;
+  if (origGetSync) {
+    wx.getStorageSync = function (k) {
+      var v = origGetSync.call(wx, k);
+      if (isGoodsKey(k) && typeof v === "string" && v.length > 5) {
+        v = boostGoods(v, "getStorageSync");
+        if (OFFLINE.sniffStorage) offlineLog("STOR", "GETSync " + k + " (" + v.length + "B 已加满)");
+      }
+      return v;
+    };
+  }
+  // 异步读取：成功回调里加满
+  var origGet = wx.getStorage;
+  if (origGet) {
+    wx.getStorage = function (o) {
+      if (o && isGoodsKey(o.key) && o.success) {
+        var origSuccess = o.success;
+        var wrapped = {};
+        for (var kk in o) wrapped[kk] = o[kk];
+        wrapped.success = function (res) {
+          if (res && typeof res.data === "string" && res.data.length > 5) {
+            res.data = boostGoods(res.data, "getStorage");
+          }
+          origSuccess(res);
+        };
+        o = wrapped;
+      }
+      return origGet.call(wx, o);
     };
   }
 })();
@@ -305,7 +424,66 @@ wx.request = function (options) {
   };
 })();
 
-offlineLog("INIT", "离线模式已启用（登录绕过 + 本地存档 + 免广告）");
+// ---- WXWASMSDK 桥嗅探：捕获 C# 调用的广告 API + 存储读写双保险 ----
+(function hookBridge() {
+  if (!OFFLINE.sniffBridge) return;
+  var __realSDK = null;
+  var wrapped = false;
+  function wrapSDK(sdk) {
+    if (!sdk || wrapped) return sdk;
+    try {
+      for (var name in sdk) {
+        var fn = sdk[name];
+        if (typeof fn !== "function") continue;
+        // 广告相关桥：完整记录调用参数（诊断"广告未准备好"的关键）
+        if (/(Ad|Ams|Video|Banner|Interstitial|Reward)/i.test(name)) {
+          (function (fname, orig) {
+            sdk[fname] = function () {
+              var args = Array.prototype.slice.call(arguments);
+              var preview = "";
+              try {
+                preview = JSON.stringify(args).slice(0, 150);
+              } catch (e) { preview = "(不可序列化)"; }
+              offlineLog("BRIDGE", fname + "(" + preview + ")");
+              return orig.apply(sdk, args);
+            };
+          })(name, fn);
+        }
+        // 存储字符串读写：道具模型再加满一次（绕过 storage.js 的 _cacheData 缓存）
+        else if (name === "WXStorageGetStringSync" || name === "WXStorageSetStringSync") {
+          (function (fname, orig) {
+            sdk[fname] = function (key, value) {
+              if (isGoodsKey(key) && typeof value === "string") {
+                value = boostGoods(value, fname);
+              }
+              var ret = orig.apply(sdk, [key, value]);
+              if (fname === "WXStorageGetStringSync" && isGoodsKey(key) && typeof ret === "string" && ret.length > 5) {
+                ret = boostGoods(ret, fname + "读");
+              }
+              return ret;
+            };
+          })(name, fn);
+        }
+      }
+      wrapped = true;
+      offlineLog("BRIDGE", "WXWASMSDK 已包装（广告API日志 + 存储双保险）");
+    } catch (e) {
+      offlineLog("BRIDGE", "包装失败: " + e);
+    }
+    return sdk;
+  }
+  try {
+    Object.defineProperty(GameGlobal, "WXWASMSDK", {
+      configurable: true,
+      get: function () { return __realSDK; },
+      set: function (v) { __realSDK = wrapSDK(v); }
+    });
+  } catch (e) {
+    offlineLog("BRIDGE", "defineProperty 失败: " + e);
+  }
+})();
+
+offlineLog("INIT", "离线模式 v5 已启用（登录绕过 + 本地存档 + 免广告 + 道具加满）");
 
 require("./weapp-adapter"), require("./events"), require("./texture-config");
 var e = o(require("./unity-namespace"));
@@ -327,7 +505,7 @@ var i = {
   DATA_FILE_SIZE: "20688739",
   OPT_DATA_FILE_SIZE: "$OPT_DATA_FILE_SIZE",
   DATA_CDN: "https://lfrjtxx-cou.gusspro.com/app-vy/Release/pdpx_vy/XYX/weixin/base/1.07/26082220225743230444",
-  loadDataPackageFromSubpackage: !1,
+  loadDataPackageFromSubpackage: !0,
   compressDataPackage: !0,
   preloadDataList: [, "/WebGL/pdpx_vy/7633e37509420d5c4b6b2e8b4a57fe7c.unity3d", "/WebGL/pdpx_vy/d92b10571f36c4b46fc93fc88702c1f0.unity3d", "/WebGL/pdpx_vy/0ad180d04830c1d905034ea213293ab4.unity3d", "/WebGL/pdpx_vy/2aca61074c33d1e145a27aac46f39ac2.unity3d", "/WebGL/pdpx_vy/2b53cd231084166ee8618661db44553a.unity3d", "/WebGL/pdpx_vy/4c0e20f81a98cf6882fc6a61b9415212.unity3d", "/WebGL/pdpx_vy/a789c5cfe2b56becb9458f694fb66d41.unity3d", "/WebGL/pdpx_vy/e7ff843cd8990db7d34fc73acf31994a.unity3d", "/WebGL/pdpx_vy/a11bccc004bc472f25ea0c8de15c527d.unity3d", "/WebGL/pdpx_vy/3257b4b268bcefb6bc4c7b39615bf11f.unity3d", "/WebGL/pdpx_vy/9d6b60c68111cac33b6d388dcf58c48e.unity3d", "/WebGL/pdpx_vy/a80b27ee25ffff74c67bbbf088418819.unity3d", "/WebGL/pdpx_vy/f85477e214e70a9de88688ddec03d9a0.unity3d", "/WebGL/pdpx_vy/00a02eb0fd95a9b6b24551e87b2c8a5a.unity3d", "/WebGL/pdpx_vy/4e4e1e203b2bf2704c5f9395ce16d495.unity3d", "/WebGL/pdpx_vy/4679d75a12fe188634e0bf3a8e01e747.unity3d", "/WebGL/pdpx_vy/c44a672629d2eecfcc82253da9b650eb.unity3d", "/WebGL/pdpx_vy/967d8d4c4553a24d1eee64cbd28c64fd.unity3d", "/WebGL/pdpx_vy/e9106ba2f44c8ccf836e5cb9a510e735.unity3d", "/WebGL/pdpx_vy/ae60bfcec33ea0d7f7ec417a25f1f290.unity3d"],
   contextConfig: {
