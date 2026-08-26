@@ -20,6 +20,8 @@ var OFFLINE = {
   freeAd: true,         // 免广告（激励视频秒完成）
   localSave: true,      // 云存档本地化
   saveBackupCount: 3,   // update 存档在本地保留的份数
+  sniffNet: true,       // 网络嗅探：透传请求的响应预览（定位广告/配置问题用）
+  sniffStorage: true,   // 存储嗅探：记录所有本地写入（定位道具数量key用）
   fakeOpenId: "oqHl119jj4V3IOGxovYqxEl_lnnI" // 抓包真实openid，勿改
 };
 
@@ -90,6 +92,30 @@ function handleSaveUpload(options) {
   return fireSuccess(options, REPLAY_MINI_UPD);
 }
 
+// 透传请求的响应嗅探（只加日志，不改行为）
+function sniffRequest(options) {
+  if (!OFFLINE.sniffNet || !options || !options.success) return options;
+  var origSuccess = options.success;
+  var wrapped = {};
+  for (var k in options) wrapped[k] = options[k];
+  wrapped.success = function (res) {
+    try {
+      var data = res && res.data, preview;
+      if (typeof data === "string") {
+        preview = data.length > 100 ? data.slice(0, 100) + "...(" + data.length + "B)" : data;
+      } else if (data instanceof ArrayBuffer) {
+        preview = "(binary " + data.byteLength + "B)";
+      } else {
+        preview = JSON.stringify(data);
+        if (preview && preview.length > 100) preview = preview.slice(0, 100) + "...";
+      }
+      offlineLog("NET", (res && res.statusCode || "?") + " " + options.url.slice(0, 100) + " => " + preview);
+    } catch (e) {}
+    origSuccess(res);
+  };
+  return wrapped;
+}
+
 // ---- wx.request 拦截 ----
 var __originalRequest = wx.request;
 wx.request = function (options) {
@@ -151,7 +177,7 @@ wx.request = function (options) {
       url.indexOf("fixgniinsl.lumosfun.com") >= 0 ||  // adsbidding
       url.indexOf("fyywngzynts.lumosfun.com") >= 0) { // attribution
     offlineLog("ADS", "透传真实服务器: " + (url.split("/")[3] || ""));
-    return __originalRequest(options);
+    return __originalRequest(sniffRequest(options));
   }
   if (url.indexOf("backend.gravity-engine.com") >= 0) {
     var body = "";
@@ -174,8 +200,36 @@ wx.request = function (options) {
   }
 
   // 4. 其他（资源CDN / 微信自身）→ 放行真实请求
-  return __originalRequest(options);
+  return __originalRequest(sniffRequest(options));
 };
+
+// ---- 存储嗅探：记录所有本地写入（找道具/体力/时间的存储key）----
+(function sniffStorage() {
+  if (!OFFLINE.sniffStorage) return;
+  var origSet = wx.setStorage;
+  if (origSet) {
+    wx.setStorage = function (o) {
+      try {
+        var v = o && o.data;
+        var s = typeof v === "string" ? v : JSON.stringify(v);
+        if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
+        offlineLog("STOR", "SET " + (o && o.key) + " = " + s);
+      } catch (e) {}
+      return origSet.call(wx, o);
+    };
+  }
+  var origSetSync = wx.setStorageSync;
+  if (origSetSync) {
+    wx.setStorageSync = function (k, v) {
+      try {
+        var s = typeof v === "string" ? v : JSON.stringify(v);
+        if (s && s.length > 90) s = s.slice(0, 90) + "...(" + s.length + "B)";
+        offlineLog("STOR", "SETSync " + k + " = " + s);
+      } catch (e) {}
+      return origSetSync.call(wx, k, v);
+    };
+  }
+})();
 
 // ---- 免广告：hook 广告创建 API ----
 (function hookAds() {
