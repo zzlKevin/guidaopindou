@@ -509,6 +509,7 @@ var i = {
   // 73856268f55b3cf4.webgl.data.unityweb.bin.br 放进 data-package/ 文件夹，且该文件
   // 必须在 game.json 的 subpackages 里声明才会真正打进包）；
   // !1=从 DATA_CDN 在线下载（原版默认行为，微信会缓存到 __GAME_FILE_CACHE）
+  // loadDataPackageFromSubpackage: !0, 这个是改为本地
   loadDataPackageFromSubpackage: !1,
   compressDataPackage: !0,
   preloadDataList: [, "/WebGL/pdpx_vy/7633e37509420d5c4b6b2e8b4a57fe7c.unity3d", "/WebGL/pdpx_vy/d92b10571f36c4b46fc93fc88702c1f0.unity3d", "/WebGL/pdpx_vy/0ad180d04830c1d905034ea213293ab4.unity3d", "/WebGL/pdpx_vy/2aca61074c33d1e145a27aac46f39ac2.unity3d", "/WebGL/pdpx_vy/2b53cd231084166ee8618661db44553a.unity3d", "/WebGL/pdpx_vy/4c0e20f81a98cf6882fc6a61b9415212.unity3d", "/WebGL/pdpx_vy/a789c5cfe2b56becb9458f694fb66d41.unity3d", "/WebGL/pdpx_vy/e7ff843cd8990db7d34fc73acf31994a.unity3d", "/WebGL/pdpx_vy/a11bccc004bc472f25ea0c8de15c527d.unity3d", "/WebGL/pdpx_vy/3257b4b268bcefb6bc4c7b39615bf11f.unity3d", "/WebGL/pdpx_vy/9d6b60c68111cac33b6d388dcf58c48e.unity3d", "/WebGL/pdpx_vy/a80b27ee25ffff74c67bbbf088418819.unity3d", "/WebGL/pdpx_vy/f85477e214e70a9de88688ddec03d9a0.unity3d", "/WebGL/pdpx_vy/00a02eb0fd95a9b6b24551e87b2c8a5a.unity3d", "/WebGL/pdpx_vy/4e4e1e203b2bf2704c5f9395ce16d495.unity3d", "/WebGL/pdpx_vy/4679d75a12fe188634e0bf3a8e01e747.unity3d", "/WebGL/pdpx_vy/c44a672629d2eecfcc82253da9b650eb.unity3d", "/WebGL/pdpx_vy/967d8d4c4553a24d1eee64cbd28c64fd.unity3d", "/WebGL/pdpx_vy/e9106ba2f44c8ccf836e5cb9a510e735.unity3d", "/WebGL/pdpx_vy/ae60bfcec33ea0d7f7ec417a25f1f290.unity3d"],
