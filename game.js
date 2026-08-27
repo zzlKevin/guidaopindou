@@ -1,3 +1,4 @@
+require('./wxhook.js');   // ← 新增，必须是第一行
 // ================================================================
 // 离线模式拦截器 v7 —— 2026-08-26 晚
 //
@@ -69,7 +70,8 @@ try {
 function offlineLog(tag, msg) {
   if (!OFFLINE.LOG) return;
   var line = "[OFFLINE][" + tag + "] " + (msg || "");
-  console.log(line);
+  //打印日志
+  //console.log(line);
   if (OFFLINE.persistLogs) {
     __logBuf.push(line);
     // 超400条丢弃旧的一半；每累计20条刷盘一次

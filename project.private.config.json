@@ -5,7 +5,7 @@
     "coverView": false,
     "lazyloadPlaceholderEnable": false,
     "skylineRenderEnable": false,
-    "preloadBackgroundData": true,
+    "preloadBackgroundData": false,
     "autoAudits": false,
     "useApiHook": true,
     "showShadowRootInWxmlPanel": false,
