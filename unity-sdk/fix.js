@@ -56,5 +56,31 @@ exports.default = {
       var t = e[n];
       t && (u(t), delete e[n])
     }
+    /* fix.js 追加：激励视频广告直通 */
+    ;
+    /* ===== fix.js 追加：激励视频广告直通 v2（加固版）===== */
+    if (!wx.__rvAdHooked) {
+      wx.__rvAdHooked = true;
+      var __origCreateAd = wx.createRewardedVideoAd ? wx.createRewardedVideoAd.bind(wx) : null;
+      if (__origCreateAd) {
+        wx.createRewardedVideoAd = function() {
+          var ad = __origCreateAd.apply(null, arguments);
+          var origOnClose = ad.onClose.bind(ad);
+          ad.onClose = function(cb) {
+            return origOnClose(function(res) {
+              console.log('%c🎬 [广告直通] onClose 原始参数:' + JSON.stringify(res || {}) + ' → 强制 isEnded=true',
+                          'color:#f0f;font-weight:bold');
+              if (typeof cb === 'function') cb({ isEnded: true });
+            });
+          };
+          console.log('%c✅ [fixAd] 激励视频实例已挂钩', 'color:#0a0;font-weight:bold');
+          return ad;
+        };
+        console.log('%c✅ [fixAd] wx.createRewardedVideoAd 直通已部署', 'color:#0a0;font-weight:bold');
+      } else {
+        console.warn('❌ [fixAd] 当前基础库无 createRewardedVideoAd');
+      }
+    }
   }
 };
+

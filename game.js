@@ -44,9 +44,10 @@ var GOODS = {
   staminaId: 1002,          // 体力
   unlimitedBuffId: 1003,    // 无限体力buff（签到送的10分钟道具同款）
   staminaCount: 999,        // 体力保持值
-  itemCount: 99,            // 道具(2002~2004等)保持值
-  buffCount: 99,            // buff道具持有数
-  buffEndTime: 4102444800000 // buff到期时间 = 2100年（永久）
+  itemCount: 9999,            // 道具(2002~2004等)保持值
+  buffCount: 9999,            // buff道具持有数
+  buffEndTime: 4102444800000, // buff到期时间 = 2100年（永久）
+  allPermanent: true        // ★ 可选：true = 所有道具全部永久化
 };
 
 // ---- 抓包回放数据（2026-08-26 15:42 正式服）----
@@ -161,12 +162,16 @@ function boostGoods(jsonStr, source) {
       var p = list[i];
       if (!p || typeof p.id !== "number") continue;
       if (p.id === GOODS.staminaId) {
-        if (p.count < GOODS.staminaCount) p.count = GOODS.staminaCount;      // 体力999
+        if (p.count < GOODS.staminaCount) p.count = GOODS.staminaCount; // 体力999
       } else if (p.id === GOODS.unlimitedBuffId) {
-        if (p.count < GOODS.buffCount) p.count = GOODS.buffCount;            // buff道具99个
-        if (!p.endTimeStamp || p.endTimeStamp < Date.now()) p.endTimeStamp = GOODS.buffEndTime; // 永久生效
-      } else if (p.id >= 2000) {
-        if (p.count < GOODS.itemCount) p.count = GOODS.itemCount;            // 所有道具99
+        if (p.count < GOODS.buffCount) p.count = GOODS.buffCount;
+        if (!p.endTimeStamp || p.endTimeStamp < Date.now()) p.endTimeStamp = GOODS.buffEndTime;
+      } else if (p.id >= 1000) {
+        // ★ 原来是 p.id >= 2000，漏掉了 1004 和 3000；现在 1000 段/3000 段全部拉满
+        if (p.count < GOODS.itemCount) p.count = GOODS.itemCount;
+        if (GOODS.allPermanent && (!p.endTimeStamp || p.endTimeStamp < Date.now())) {
+          p.endTimeStamp = GOODS.buffEndTime;  // 可选：全部永久
+        }
       }
     }
     var out = JSON.stringify(o);
@@ -796,3 +801,45 @@ if (d && c && r) {
   var l = GameGlobal.WXWASMSDK.GetJsonValue("UsePayModule");
   l && "0" !== l || GameGlobal.WXWASMSDK.START_LOAD()
 }
+/* ===== 内置控制台工具箱（焊死在 game.js，每次编译后依然可用）===== */
+(function cheatTools(){
+  var G = GameGlobal.__G = GameGlobal.__G || {};
+  try { window.G = G; } catch(e){}
+  GameGlobal.G = G;
+
+  G.listProps = function(){
+    try {
+      var o = JSON.parse(wx.getStorageSync('pdpx_vyGoodsModel_Z'));
+      console.table((o.propList||[]).map(function(p){
+        return { id:p.id, count:p.count,
+          expires: p.endTimeStamp>0 ? new Date(p.endTimeStamp).toISOString().slice(0,10) : '无期限' };
+      }));
+    } catch(e){ console.log('读取失败', e); }
+  };
+  G.setProp = function(id, count, end){
+    try {
+      var o = JSON.parse(wx.getStorageSync('pdpx_vyGoodsModel_Z'));
+      var it = null;
+      (o.propList||[]).forEach(function(p){ if(p.id===id) it=p; });
+      if(!it){ it={id:id,count:count,endTimeStamp:end||0}; o.propList.push(it); }
+      else { it.count=count; if(end!==undefined) it.endTimeStamp=end; }
+      wx.setStorageSync('pdpx_vyGoodsModel_Z', JSON.stringify(o));
+      console.log('✅ 道具', id, '→', it.count);
+    } catch(e){ console.log('失败', e); }
+  };
+  G.setRemoveAds = function(state){
+    try {
+      var o = JSON.parse(wx.getStorageSync('pdpx_vyCacheData.txt')||'{}');
+      o.RemoveAdsState = (state===undefined?1:state);
+      wx.setStorageSync('pdpx_vyCacheData.txt', JSON.stringify(o));
+      console.log('✅ RemoveAdsState →', o.RemoveAdsState, '（重启后生效）');
+    } catch(e){ console.log('失败', e); }
+  };
+  G.logs = function(n){
+    try {
+      var a = JSON.parse(wx.getStorageSync('offline_logs')||'[]');
+      console.log(a.slice(-(n||60)).join('\n'));
+    } catch(e){}
+  };
+  console.log('✅ [cheatTools] G.listProps / G.setProp / G.setRemoveAds / G.logs 已就绪');
+})();
