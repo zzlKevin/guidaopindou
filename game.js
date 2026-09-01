@@ -19,16 +19,16 @@ require('./wxhook.js');   // ← 新增，必须是第一行
 // ================================================================
 var OFFLINE = {
   ENABLED: true,        // 总开关
-  LOG: true,            // 拦截日志（稳定后改 false）
+  LOG: false,           // 拦截日志（用户要求静默 2026-09-01）
   freeAd: true,         // 免广告（激励视频秒完成）
   localSave: true,      // 云存档本地化
   saveBackupCount: 3,   // update 存档在本地保留的份数
   goodsCheat: true,     // 道具/体力/无限体力buff 作弊
-  tryRealLogin: true,   // 自适应登录：先试真实服务器，失败自动回退回放
-  persistLogs: true,    // 启动日志持久化（存到 storage，事后可查启动阶段行为）
-  sniffNet: true,       // 网络嗅探：透传请求的响应预览（定位广告/配置问题用）
-  sniffStorage: true,   // 存储嗅探：记录所有本地写入（定位道具数量key用）
-  sniffBridge: true,    // C#→JS 桥调用嗅探（广告初始化诊断用）
+  tryRealLogin: false,  // 2026-09-01 用户要求零上传：关闭真实登录试探（appid不匹配必失败还外发一次）
+  persistLogs: false,   // 2026-09-01 用户要求：日志持久化关闭
+  sniffNet: false,      // 网络嗅探关闭
+  sniffStorage: false,  // 存储嗅探关闭
+  sniffBridge: false,   // 桥嗅探关闭
   fakeOpenId: "oqHl119jj4V3IOGxovYqxEl_lnnI" // 抓包真实openid，勿改
 };
 
@@ -38,6 +38,28 @@ var ADAPTIVE = {
   loginDecided: false,  // 登录方式已确定？
   adBridgeCalls: 0      // C# 调用广告API的次数（watchdog 用）
 };
+
+// ---- 2026-09-01 用户要求零上传：微信自身上报 API 全部静默 ----
+// reportEvent / reportAnalytics / reportPerformance：微信数据上报
+// getRealtimeLogManager / getLogManager：实时日志会打包上传到微信后台
+(function silenceWxReport() {
+  ["reportEvent", "reportAnalytics", "reportPerformance", "reportCustomEvent"].forEach(function (name) {
+    try {
+      if (typeof wx[name] === "function") {
+        wx[name] = function () { return true; };
+      }
+    } catch (e) {}
+  });
+  var EMPTY_LOGGER = { error: function(){}, warn: function(){}, info: function(){},
+                       log: function(){}, debug: function(){},
+                       setFilterMsg: function(){}, addFilterMsg: function(){} };
+  try {
+    wx.getRealtimeLogManager = function () { return EMPTY_LOGGER; };
+    wx.getLogManager = function () { return EMPTY_LOGGER; };
+    // 顺手清掉历史诊断日志残留（offline_logs 不再使用）
+    if (wx.removeStorageSync) wx.removeStorageSync("offline_logs");
+  } catch (e) {}
+})();
 
 // 道具作弊参数
 var GOODS = {
@@ -59,36 +81,36 @@ var REPLAY_MINI_UPD    = "{\"encrypt\":\"/W3aBgVsjt+JC20VuJHAVG9s+eU8/gqta61l/Yv
 var REPLAY_ADZ_CFG     = "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"; // 广告位配置(base64)
 var REPLAY_DBT_CFG     = "a1HvihfUBot4RTl9/yT9+phfTo22XOwU8TwP8frVgemHiDEki+BaLgRZZDwaMKWKF7w1EhmDl6uI3SyA8kUOukfDND9iIDeVm0vNYm+kmI4yccS1cTgi+cdn/vGjiAmSC6/upkHIb5e1zErinKkmN6JlufW2KfY7K7j/GIb3yAjdjRWgri74uorlKknD4thsgYoma1QSm+b0OBCnnk5nvk7Dx9MqHjK+qxcQ1NpnhhFml4s8Da1Vt5GtOnZ/N2ZdOf8eAl4YasPtItDd8iX0VwwC1nIl/FYOxj/R0CLN45hsHKoxGFDkIitorcmuUxo1odBcXkwS6gKSlXiJXvjYc/u5xRl7FFKgddQMjRPPc4QUMVADCFX37DyPHTbHo7VIbIW/ym2ygTdwTXPSGICBaBlhsT/vWTEhKuast4z/epop4UxwnyTO3icx42bP3j6FsGfs6gxMUR2fmP9VTS5QLDi5ZPWTFP7IStQtqC7cIuMy0763ZpLYB56+fVFQt1SXYCoKdjHKXd1D40ASdBWghitkQaggMKDCGJkd5D11uLC9FGnQtFvsNEevnDVMrxyVbJ0Oisiyg6jModbnu9LcR67px87F0LtOjsxR49ZA1zJHY+kRKO2dTsUxjaWTpwqKIzJDyXz0Kk48e6KId1GHFlL1/SuXXlazHbYrWCLNaUAd9FyPx6/dv5v3yZfzB07v1rbpM/odJE46jmlg0lX08FWhR97ZGyQ64fTv4YkMBXTUpeSt5faUVWzfm/f2/c4V6tPv3Ubbcz+1J0rYESwXMnZBkNvxE63JovBkURunt/NlUhlLKyxXODoxgFswfVfcGO31fDs4m/kTn3qo1AziVgyYH3DMDJo8RTKE8rnla3QWgn7Moex2B2jMq3Ey6f4SFAUJE2AKt/R/84z8t9tOGtkyyNs3ptm3qhyA25XqvQH9pVl1z3H265I+pbV6AzS+mOwpdAvpwLtxoKgvtYr5g/2zKxk48stTQxnhQLmwxbWO86gahBWtF9G2D+h+aAbh3pbtoppBTfCCvB+4LaLQ8DniHDQ4bTjo2VMlf4ZoHlZDCLp2nmuAa4Uo6gVkG4PczjXnxQINzouMF52PAXH+FILbwSD9PG9zDjGJa4tqltkUTYpLLs3ZeH817Rhd/4Wznh6s/NTGDP5cepKEYofKZJmhu02gADXaCz6DCIjbrVw+5BGA4wDYLrIearq7o1DHP+sT0OsCagg4WP7PN7b79XvIdN64XEqhv/RF1IZ6Cj4X4/nlVTn9vnYifi9u1CkMtOKd3thQJgrWwX7b27mzKnRuuYwmcTtF30RWTDXZau08ie26IsFpaAIGnrVONlXDPDluOGlNL0aT5bTnuXxrAZO594l0VUlhhllJKHgAZaL3gNlivLHfUXUp7mLstAMIM/pK8x94IosRAMlpNEBAtAnQA2vCUUdBBjOEgMLn4q7EzHeP/qI1+tZWcP3ECXQF7I/NghXcbu2OJ45ijBFkT9Ezim/iyCGlXkfrk/lfptW3xcIq1BBJFLjC1eHlIgn7zyMeMktSHwFBrspzTK4GxkNRrXWXyFrRQ8bUMFEXs81CVZVpl+BhK3+IoTK3+WMP+bn96Z48oEIvxAzGN+n4+onUU7nDfXr7Ec3POfglOJMPGRdJzHuhDp+aiGl1NXxwWuSusuQhDZtajLmxTrkwIS5inuIOfrPC4kyQpeZyNi7vZ4pgYXPjZgRaMj2sI6Rpvtr4jqPniOOOlpxKa02YCV6rtfQZ+wVH9fl4kfl6906w+HQPeCShJMlpQ+czTl289KLCIBwbeCTVA75lUpVgQs/WSMouGqmWsk6DK6sbV0X5ERcO18Hs2UKyAG8rNY9MyChG7dCXGF2IFnNjjStCLw=="; // 远程参数配置(base64)
 
-// 日志持久化：ring buffer 存到 storage（启动阶段日志事后可查）
-var __logBuf = [];
-var __logFlushed = 0;
-try {
-  __logBuf = JSON.parse(wx.getStorageSync("offline_logs") || "[]");
-  if (!Array.isArray(__logBuf)) __logBuf = [];
-  __logBuf.push("==== 新会话 " + new Date().toLocaleString() + " ====");
-} catch (e) { __logBuf = []; }
+// 日志持久化 —— 2026-09-01 用户要求注释掉（控制台不输出 + 不写 storage）
+// var __logBuf = [];
+// var __logFlushed = 0;
+// try {
+//   __logBuf = JSON.parse(wx.getStorageSync("offline_logs") || "[]");
+//   if (!Array.isArray(__logBuf)) __logBuf = [];
+//   __logBuf.push("==== 新会话 " + new Date().toLocaleString() + " ====");
+// } catch (e) { __logBuf = []; }
 
 function offlineLog(tag, msg) {
+  /* 2026-09-01 用户要求静默：console 输出与 storage 持久化全部注释
   if (!OFFLINE.LOG) return;
   var line = "[OFFLINE][" + tag + "] " + (msg || "");
-  //打印日志
-  //console.log(line);
+  console.log(line);
   if (OFFLINE.persistLogs) {
     __logBuf.push(line);
-    // 超400条丢弃旧的一半；每累计20条刷盘一次
     if (__logBuf.length > 400) __logBuf = __logBuf.slice(200);
     if (__logBuf.length - __logFlushed >= 20) {
       __logFlushed = __logBuf.length;
       try { wx.setStorageSync("offline_logs", JSON.stringify(__logBuf)); } catch (e) {}
     }
   }
+  */
 }
-// 页面隐藏时强制刷盘
-try {
-  wx.onHide(function () {
-    try { wx.setStorageSync("offline_logs", JSON.stringify(__logBuf)); } catch (e) {}
-  });
-} catch (e) {}
+// 页面隐藏时强制刷盘 —— 同步注释
+// try {
+//   wx.onHide(function () {
+//     try { wx.setStorageSync("offline_logs", JSON.stringify(__logBuf)); } catch (e) {}
+//   });
+// } catch (e) {}
 
 // 构造 wx.request 风格的响应对象，data 一律用字符串
 // （weapp-adapter 的 XHR 会原样赋给 responseText，和真实服务器行为一致）
@@ -290,9 +312,10 @@ wx.request = function (options) {
       offlineLog("LOGIN", "decodeV2 -> 回放解密结果");
       return fireSuccess(options, REPLAY_DECODE_V2);
     }
-    // azory 其他接口：真实模式透传，回放模式也透传（无抓包数据可回放）
-    offlineLog("LOGIN", "azory透传: " + (url.split("/")[3] || ""));
-    return __originalRequest(sniffRequest(options));
+    // azory 其他接口：2026-09-01 用户要求零上传 → 本地假成功（原来是透传）
+    // offlineLog("LOGIN", "azory透传: " + (url.split("/")[3] || ""));
+    // return __originalRequest(sniffRequest(options));
+    return fireSuccess(options, '{"code":"0","msg":""}');
   }
 
   // 2. 云存档/事件服务 gusspro
@@ -355,8 +378,11 @@ wx.request = function (options) {
       url.indexOf("fixfun.lumosfun.com") >= 0 ||      // adsapi
       url.indexOf("fixgniinsl.lumosfun.com") >= 0 ||  // adsbidding
       url.indexOf("fyywngzynts.lumosfun.com") >= 0) { // attribution
-    offlineLog("ADS", "透传真实服务器: " + (url.split("/")[3] || ""));
-    return __originalRequest(sniffRequest(options));
+    // 2026-09-01 用户要求零上传：UserStatServ/adsapi/attribution 等统计上报
+    // 全部本地假成功（原来是透传真实服务器）
+    // offlineLog("ADS", "透传真实服务器: " + (url.split("/")[3] || ""));
+    // return __originalRequest(sniffRequest(options));
+    return fireSuccess(options, '{"code":"0","msg":""}');
   }
   if (url.indexOf("backend.gravity-engine.com") >= 0) {
     var body = "";
@@ -662,18 +688,17 @@ function tryBackdate(key, value) {
   }
 })();
 
-// ---- 启动 watchdog：+45秒 检查广告初始化是否发生 ----
-(function bootWatchdog() {
-  setTimeout(function () {
-    offlineLog("WATCHDOG", "启动45秒报告: 登录模式=" + (ADAPTIVE.realLogin ? "真实" : "回放") +
-      ", 广告API调用次数=" + ADAPTIVE.adBridgeCalls +
-      (ADAPTIVE.adBridgeCalls === 0 ? " ⚠️广告系统未初始化!" : " ✓广告系统已激活"));
-    // 强制刷盘一次，方便事后查启动日志
-    try { wx.setStorageSync("offline_logs", JSON.stringify(__logBuf)); } catch (e) {}
-  }, 45000);
-})();
+// ---- 启动 watchdog：2026-09-01 日志静默后整体注释（需要诊断时恢复）----
+// (function bootWatchdog() {
+//   setTimeout(function () {
+//     offlineLog("WATCHDOG", "启动45秒报告: 登录模式=" + (ADAPTIVE.realLogin ? "真实" : "回放") +
+//       ", 广告API调用次数=" + ADAPTIVE.adBridgeCalls +
+//       (ADAPTIVE.adBridgeCalls === 0 ? " ⚠️广告系统未初始化!" : " ✓广告系统已激活"));
+//     try { wx.setStorageSync("offline_logs", JSON.stringify(__logBuf)); } catch (e) {}
+//   }, 45000);
+// })();
 
-offlineLog("INIT", "离线模式 v6 已启用（自适应登录 + 本地存档 + 免广告 + 道具加满 + 日志持久化）");
+offlineLog("INIT", "离线模式 v10 已启用（零上传 + 静默日志 + 本地存档 + 道具加满）");
 
 require("./weapp-adapter"), require("./events"), require("./texture-config");
 var e = o(require("./unity-namespace"));
