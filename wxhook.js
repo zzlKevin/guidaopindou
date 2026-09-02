@@ -375,3 +375,165 @@
     '\n候选≤3自动锁定，三指解除');
   showToast('速度模块 v11.1 已启动', 2000);
 })();
+/* =============================================================
+ * 内存扫描套件 v6.1 —— 2026-09-01 倍速定位版
+ * 修正（按用户实测反馈）：
+ *   ① vlist 加 return，不再是 Undefined
+ *   ② 控制台调用前缀必须是 GameGlobal.（G 只是模块内部变量）
+ * 新增：倍速 10x 定位流程（见下方说明）
+ * ============================================================= */
+(function () {
+  'use strict';
+  var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
+  if (G.__vscan) { console.log('[vscan] 已加载'); return; }
+
+  var __cands = [];   // 候选: [{a:地址, t:'f'|'i'}]
+  var __lastVal = 0;
+
+  function dv() {
+    if (!G.wasmmemReady || !G.wasmmemReady()) return null;
+    return new DataView(G.getWasmMem().buffer);
+  }
+  function fmt(a) { return '0x' + a.toString(16); }
+
+  /* 首扫：全内存找 value（int32 和 float32 双格式） */
+  G.vscan = function (value) {
+    var d = dv();
+    if (!d) return console.warn('[vscan] wasm内存未就绪');
+    if (typeof value !== 'number' || value <= 0) return console.warn('[vscan] 请传入正数');
+    __cands = [];
+    __lastVal = value;
+    var len = d.byteLength - 4;
+    for (var a = 0; a < len; a += 4) {
+      if (d.getInt32(a, true) === value) __cands.push({ a: a, t: 'i' });
+    }
+    var fv = value;
+    for (var a2 = 0; a2 < len; a2 += 4) {
+      if (d.getFloat32(a2, true) === fv) __cands.push({ a: a2, t: 'f' });
+    }
+    var msg = '[vscan] 首扫 ' + value + ' → ' + __cands.length + ' 个候选';
+    console.log('%c' + msg, 'color:#06c;font-weight:bold');
+    if (__cands.length === 0) {
+      console.warn('没找到！可能存的是"等级索引"：显示2倍速时索引是1，试 GameGlobal.vscan(1)');
+    } else {
+      G.vlist();
+    }
+    return __cands.length;
+  };
+
+  /* 过滤：值变化后，只保留值同步变化的地址 */
+  G.vfilter = function (newValue) {
+    var d = dv();
+    if (!d) return console.warn('[vfilter] wasm内存未就绪');
+    if (!__cands.length) return console.warn('[vfilter] 先跑 GameGlobal.vscan');
+    var keep = [];
+    for (var i = 0; i < __cands.length; i++) {
+      var c = __cands[i];
+      var v = c.t === 'i' ? d.getInt32(c.a, true) : d.getFloat32(c.a, true);
+      if (v === newValue) keep.push(c);
+    }
+    var dropped = __cands.length - keep.length;
+    __cands = keep;
+    console.log('%c[vfilter] ' + __lastVal + ' → ' + newValue + '：淘汰 ' + dropped + '，剩 ' + __cands.length + ' 个',
+                'color:#06c;font-weight:bold');
+    __lastVal = newValue;
+    G.vlist();
+    return __cands.length;
+  };
+
+  /* 不变过滤：切场景后核对（剔除被回收/复用的地址） */
+  G.vkeep = function () {
+    return G.vfilter(__lastVal);
+  };
+
+  /* 列表：v6.1 加 return，返回候选数组（控制台直接可见） */
+  G.vlist = function () {
+    if (!__cands.length) { console.log('[vlist] 无候选'); return []; }
+    var d = dv();
+    var lines = [];
+    __cands.slice(0, 30).forEach(function (c) {
+      var v = d ? (c.t === 'i' ? d.getInt32(c.a, true) : d.getFloat32(c.a, true)) : '?';
+      lines.push('  ' + fmt(c.a) + ' (' + (c.t === 'i' ? 'int' : 'float') + ') = ' + v +
+        '  验证: GameGlobal.vwrite(' + fmt(c.a) + ', 10)');
+    });
+    var head = '[vlist] ' + __cands.length + ' 个候选（前' + Math.min(30, __cands.length) + '）：';
+    console.log(head + '\n' + lines.join('\n'));
+    if (__cands.length === 1) {
+      console.log('%c★ 只剩1个候选！99%就是它 → GameGlobal.vwrite(' + fmt(__cands[0].a) + ', 10) 验证，界面/速度有变化就 GameGlobal.vwatch(' + fmt(__cands[0].a) + ', 10) 锁定',
+                  'color:#0a0;font-weight:bold');
+    }
+    return __cands;
+  };
+
+  /* 写值验证 */
+  G.vwrite = function (addr, val) {
+    var d = dv();
+    if (!d) return console.warn('[vwrite] wasm内存未就绪');
+    var t = 'i';
+    for (var i = 0; i < __cands.length; i++) {
+      if (__cands[i].a === addr) { t = __cands[i].t; break; }
+    }
+    if (t === 'i') d.setInt32(addr, val, true);
+    else d.setFloat32(addr, val, true);
+    console.log('%c[vwrite] ' + fmt(addr) + ' ← ' + val + '（' + (t === 'i' ? 'int' : 'float') +
+      '）看游戏有没有变化！', 'color:#d00;font-weight:bold');
+    return true;
+  };
+
+  /* 哨兵锁定：持续覆写（0.5秒一次） */
+  var __watchTimer = null;
+  G.vwatch = function (addr, val) {
+    G.vunwatch();
+    var d = dv();
+    if (!d) return console.warn('[vwatch] wasm内存未就绪');
+    var t = 'i';
+    for (var i = 0; i < __cands.length; i++) {
+      if (__cands[i].a === addr) { t = __cands[i].t; break; }
+    }
+    __watchTimer = setInterval(function () {
+      try {
+        var dd = dv();
+        if (!dd) return;
+        if (t === 'i') dd.setInt32(addr, val, true);
+        else dd.setFloat32(addr, val, true);
+      } catch (e) {}
+    }, 500);
+    console.log('%c[vwatch] ★ 已锁定 ' + fmt(addr) + ' = ' + val + '（每0.5秒覆写）',
+                'color:#0a0;font-weight:bold');
+    return true;
+  };
+  G.vunwatch = function () {
+    if (__watchTimer) { clearInterval(__watchTimer); __watchTimer = null; console.log('[vwatch] 已解除'); }
+    return true;
+  };
+
+  /* 倍速专用向导：vpump(当前倍速数字)
+   * 用法：进关卡确认当前倍速 → GameGlobal.vpump(2)（当前2x就传2）
+   * 然后按提示每点一次倍速按钮敲一次回车 */
+  G.vpump = function (cur) {
+    var r = G.vscan(cur);
+    if (r === undefined || r === 0) return r;
+    console.log('%c[vpump] 倍速连环过滤开始！接下来：',
+      'color:#c60;font-weight:bold',
+      '\n① 点倍速按钮（2x→3x），然后 GameGlobal.vfilter(3)',
+      '\n② 再点（3x→1x），然后 GameGlobal.vfilter(1)',
+      '\n③ 再点（1x→2x），然后 GameGlobal.vfilter(2)',
+      '\n④ 重复几轮直到候选 < 10 个',
+      '\n⑤ GameGlobal.vlist() → 逐个 GameGlobal.vwrite(地址, 10)',
+      '\n   看豆子/传送带速度有没有暴走（按钮文字不一定变，看实际速度！）',
+      '\n⑥ 找到后 GameGlobal.vwatch(地址, 10) 永久10倍');
+    return r;
+  };
+
+  G.__vscan = true;
+  console.log('%c[vscan v6.1] 装载完成（注意：控制台里用 GameGlobal. 前缀，不是 G.）',
+    'color:#0a0;font-weight:bold',
+    '\n=== 倍速 10x 定位流程 ===',
+    '\n1. 进关卡，看当前倍速数字（比如 2x）',
+    '\n2. GameGlobal.vpump(2)   ← 传当前倍速数字',
+    '\n3. 按提示：每点一次倍速按钮，调一次 GameGlobal.vfilter(新数字)',
+    '\n4. 候选剩个位数后逐个 vwrite(地址,10) 试速度',
+    '\n5. 确认后 GameGlobal.vwatch(地址, 10) 锁定',
+    '\n※ 若 vscan 找不到：倍速可能存的是索引(0/1/2)而不是数字(1/2/3)，改传 GameGlobal.vpump(1)',
+    '\n※ 速度没变化但游戏卡死/报错 → 那个地址是别的字段，vunwatch 换下一个');
+})();
