@@ -20,7 +20,7 @@
   var ANCHOR      = 0x319eb54;
   var TARGET_SEC  = 60000;          // 偏移量 = 1000 分钟
 
-  var timeCheatOn = true;           // 默认开启
+  var timeCheatOn = false;           // 默认开启
   var originalLevelTime = null;     // 原定关卡时间（秒）
   var pollTimer = null;            // 轮询定时器句柄
   var triggered30 = false;         // 当前周期是否已触发30秒提示
@@ -275,248 +275,248 @@
 })();
 
 /* ============ [模块③] 速度模块 v11.1（上方88%区域双指过滤） ============ */
-(function () {
-  'use strict';
-  var globalObj = (typeof GameGlobal !== 'undefined') ? GameGlobal :
-                  (typeof window !== 'undefined') ? window : global;
-  if (globalObj.__speedV11) { console.log('[speed] 已加载'); return; }
+// (function () {
+//   'use strict';
+//   var globalObj = (typeof GameGlobal !== 'undefined') ? GameGlobal :
+//                   (typeof window !== 'undefined') ? window : global;
+//   if (globalObj.__speedV11) { console.log('[speed] 已加载'); return; }
 
-  function showToast(msg, dur) {
-    dur = dur || 2000;
-    if (globalObj.toast && typeof globalObj.toast === 'function') {
-      globalObj.toast(msg, dur);
-    } else {
-      try {
-        if (typeof wx !== 'undefined' && wx.showToast) {
-          wx.showToast({ title: msg, icon: 'none', duration: dur, mask: false });
-        } else {
-          console.log('[toast] ' + msg);
-        }
-      } catch (e) {
-        console.log('[toast] ' + msg);
-      }
-    }
-  }
+//   function showToast(msg, dur) {
+//     dur = dur || 2000;
+//     if (globalObj.toast && typeof globalObj.toast === 'function') {
+//       globalObj.toast(msg, dur);
+//     } else {
+//       try {
+//         if (typeof wx !== 'undefined' && wx.showToast) {
+//           wx.showToast({ title: msg, icon: 'none', duration: dur, mask: false });
+//         } else {
+//           console.log('[toast] ' + msg);
+//         }
+//       } catch (e) {
+//         console.log('[toast] ' + msg);
+//       }
+//     }
+//   }
 
-  var screenHeight = 0;
-  try {
-    var sysInfo = wx.getSystemInfoSync();
-    screenHeight = sysInfo.windowHeight || sysInfo.screenHeight || 0;
-  } catch (e) {}
-  if (!screenHeight) {
-    try { if (typeof window !== 'undefined' && window.innerHeight) screenHeight = window.innerHeight; } catch (e) {}
-  }
-  if (!screenHeight) screenHeight = 800;
-  console.log('[speed] 屏幕高度 = ' + screenHeight + '，下方12%阈值 = ' + (screenHeight * 0.88));
+//   var screenHeight = 0;
+//   try {
+//     var sysInfo = wx.getSystemInfoSync();
+//     screenHeight = sysInfo.windowHeight || sysInfo.screenHeight || 0;
+//   } catch (e) {}
+//   if (!screenHeight) {
+//     try { if (typeof window !== 'undefined' && window.innerHeight) screenHeight = window.innerHeight; } catch (e) {}
+//   }
+//   if (!screenHeight) screenHeight = 800;
+//   console.log('[speed] 屏幕高度 = ' + screenHeight + '，下方12%阈值 = ' + (screenHeight * 0.88));
 
-  var SPEED_TARGET = 5;
-  var state = 'IDLE';
-  var MAXC = 2200000;
-  var pAddr, pVal, pType;
-  try {
-    pAddr = new Float64Array(MAXC);
-    pVal  = new Float64Array(MAXC);
-    pType = new Uint8Array(MAXC);
-  } catch (e) { pAddr = null; }
-  var pLen = 0;
-  var locked = [];
-  var bufId = null, f32v = null, i32v = null;
-  var stepValues = [3, 1, 0, 2, 1];
-  var stepIndex = 0;
+//   var SPEED_TARGET = 5;
+//   var state = 'IDLE';
+//   var MAXC = 2200000;
+//   var pAddr, pVal, pType;
+//   try {
+//     pAddr = new Float64Array(MAXC);
+//     pVal  = new Float64Array(MAXC);
+//     pType = new Uint8Array(MAXC);
+//   } catch (e) { pAddr = null; }
+//   var pLen = 0;
+//   var locked = [];
+//   var bufId = null, f32v = null, i32v = null;
+//   var stepValues = [3, 1, 0, 2, 1];
+//   var stepIndex = 0;
 
-  function views() {
-    var h = globalObj.Module && globalObj.Module.HEAPU8;
-    if (!h || !h.buffer) return false;
-    if (bufId !== h.buffer) {
-      bufId = h.buffer;
-      f32v = new Float32Array(h.buffer);
-      i32v = new Int32Array(h.buffer);
-    }
-    return true;
-  }
-  function readVal(t, idx) { return t === 0 ? i32v[idx] : f32v[idx]; }
-  function writeVal(t, idx, v) { if (t === 0) i32v[idx] = v; else f32v[idx] = v; }
-  function isNat(v) { return v === 1 || v === 2 || v === 3; }
+//   function views() {
+//     var h = globalObj.Module && globalObj.Module.HEAPU8;
+//     if (!h || !h.buffer) return false;
+//     if (bufId !== h.buffer) {
+//       bufId = h.buffer;
+//       f32v = new Float32Array(h.buffer);
+//       i32v = new Int32Array(h.buffer);
+//     }
+//     return true;
+//   }
+//   function readVal(t, idx) { return t === 0 ? i32v[idx] : f32v[idx]; }
+//   function writeVal(t, idx, v) { if (t === 0) i32v[idx] = v; else f32v[idx] = v; }
+//   function isNat(v) { return v === 1 || v === 2 || v === 3; }
 
-  function snapshot() {
-    if (!views() || !pAddr) return false;
-    pLen = 0;
-    var i, n = i32v.length;
-    for (i = 0; i < n && pLen < MAXC; i++) {
-      if (i32v[i] === 1) { pAddr[pLen] = i * 4; pVal[pLen] = 1; pType[pLen] = 0; pLen++; }
-    }
-    var f = f32v;
-    for (i = 0; i < f.length && pLen < MAXC; i++) {
-      if (f[i] === 1) { pAddr[pLen] = i * 4; pVal[pLen] = 1; pType[pLen] = 1; pLen++; }
-    }
-    return true;
-  }
+//   function snapshot() {
+//     if (!views() || !pAddr) return false;
+//     pLen = 0;
+//     var i, n = i32v.length;
+//     for (i = 0; i < n && pLen < MAXC; i++) {
+//       if (i32v[i] === 1) { pAddr[pLen] = i * 4; pVal[pLen] = 1; pType[pLen] = 0; pLen++; }
+//     }
+//     var f = f32v;
+//     for (i = 0; i < f.length && pLen < MAXC; i++) {
+//       if (f[i] === 1) { pAddr[pLen] = i * 4; pVal[pLen] = 1; pType[pLen] = 1; pLen++; }
+//     }
+//     return true;
+//   }
 
-  function applyFilter(filterVal) {
-    if (!pLen) return;
-    var w = 0;
-    for (var r = 0; r < pLen; r++) {
-      if (readVal(pType[r], pAddr[r] >> 2) === filterVal) {
-        pAddr[w] = pAddr[r];
-        pVal[w] = filterVal;
-        pType[w] = pType[r];
-        w++;
-      }
-    }
-    pLen = w;
-  }
+//   function applyFilter(filterVal) {
+//     if (!pLen) return;
+//     var w = 0;
+//     for (var r = 0; r < pLen; r++) {
+//       if (readVal(pType[r], pAddr[r] >> 2) === filterVal) {
+//         pAddr[w] = pAddr[r];
+//         pVal[w] = filterVal;
+//         pType[w] = pType[r];
+//         w++;
+//       }
+//     }
+//     pLen = w;
+//   }
 
-  function lockSelect() {
-    if (!pLen) {
-      state = 'IDLE';
-      showToast('候选:0 请重新三指', 2000);
-      return;
-    }
-    var pick = -1;
-    if (pLen === 1) pick = 0;
-    else if (pLen === 3) {
-      if (pType[1] === 1) pick = 1;
-      else { for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; break; } } if (pick < 0) pick = 1; }
-    } else {
-      for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; break; } }
-      if (pick < 0) pick = (pLen === 1) ? 0 : 1;
-    }
-    if (pick < 0 || pick >= pLen) pick = 0;
-    var A = pAddr[pick], T = pType[pick], V0 = readVal(T, A >> 2);
-    locked = [{ a: A, t: T, v0: V0 }];
-    writeVal(T, A >> 2, SPEED_TARGET);
-    state = 'LOCKED';
-    console.log('%c[speed] ★ 锁定 0x' + A.toString(16) + ' -> ' + SPEED_TARGET + '倍', 'color:#0a0;font-weight:bold');
-    showToast('已锁定5倍 三指解除', 2500);
-  }
+//   function lockSelect() {
+//     if (!pLen) {
+//       state = 'IDLE';
+//       showToast('候选:0 请重新三指', 2000);
+//       return;
+//     }
+//     var pick = -1;
+//     if (pLen === 1) pick = 0;
+//     else if (pLen === 3) {
+//       if (pType[1] === 1) pick = 1;
+//       else { for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; break; } } if (pick < 0) pick = 1; }
+//     } else {
+//       for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; break; } }
+//       if (pick < 0) pick = (pLen === 1) ? 0 : 1;
+//     }
+//     if (pick < 0 || pick >= pLen) pick = 0;
+//     var A = pAddr[pick], T = pType[pick], V0 = readVal(T, A >> 2);
+//     locked = [{ a: A, t: T, v0: V0 }];
+//     writeVal(T, A >> 2, SPEED_TARGET);
+//     state = 'LOCKED';
+//     console.log('%c[speed] ★ 锁定 0x' + A.toString(16) + ' -> ' + SPEED_TARGET + '倍', 'color:#0a0;font-weight:bold');
+//     showToast('已锁定5倍 三指解除', 2500);
+//   }
 
-  function quadFinger() {
-    if (state !== 'SCAN') return;
-    if (!views() || !pLen) { showToast('候选为空 请重新三指', 1500); state = 'IDLE'; return; }
-    var filterVal = stepValues[stepIndex];
-    applyFilter(filterVal);
-    stepIndex = (stepIndex + 1) % stepValues.length;
-    if (pLen === 0) { showToast('候选:0 请重新三指', 2000); state = 'IDLE'; return; }
-    if (pLen <= 3) { showToast('候选:' + pLen + ' 自动锁定...', 1500); lockSelect(); return; }
-    var nextOp = stepValues[stepIndex];
-    var nextName = (nextOp === 0) ? '设置' : nextOp + '倍';
-    showToast('候选:' + pLen + ' ' + nextName + ' 双指', 2000);
-  }
+//   function quadFinger() {
+//     if (state !== 'SCAN') return;
+//     if (!views() || !pLen) { showToast('候选为空 请重新三指', 1500); state = 'IDLE'; return; }
+//     var filterVal = stepValues[stepIndex];
+//     applyFilter(filterVal);
+//     stepIndex = (stepIndex + 1) % stepValues.length;
+//     if (pLen === 0) { showToast('候选:0 请重新三指', 2000); state = 'IDLE'; return; }
+//     if (pLen <= 3) { showToast('候选:' + pLen + ' 自动锁定...', 1500); lockSelect(); return; }
+//     var nextOp = stepValues[stepIndex];
+//     var nextName = (nextOp === 0) ? '设置' : nextOp + '倍';
+//     showToast('候选:' + pLen + ' ' + nextName + ' 双指', 2000);
+//   }
 
-  function triFinger() {
-    if (!views()) { showToast('WASM未就绪', 1000); return; }
-    if (state === 'IDLE') {
-      if (snapshot()) {
-        state = 'SCAN';
-        stepIndex = 0;
-        var firstOp = stepValues[0];
-        var firstName = (firstOp === 0) ? '设置' : firstOp + '倍';
-        console.log('[speed] 扫描完成，候选 ' + pLen + ' 个');
-        showToast('候选:' + pLen + ' ' + firstName + ' 双指', 3000);
-      } else {
-        showToast('快照失败 请重试', 1500);
-      }
-    } else if (state === 'SCAN') {
-      state = 'IDLE';
-      showToast('已取消扫描', 1500);
-    } else {
-      for (var k = 0; k < locked.length; k++) {
-        var L = locked[k];
-        writeVal(L.t, L.a >> 2, L.v0);
-      }
-      locked = [];
-      state = 'IDLE';
-      showToast('已恢复原生倍速', 1500);
-    }
-  }
+//   function triFinger() {
+//     if (!views()) { showToast('WASM未就绪', 1000); return; }
+//     if (state === 'IDLE') {
+//       if (snapshot()) {
+//         state = 'SCAN';
+//         stepIndex = 0;
+//         var firstOp = stepValues[0];
+//         var firstName = (firstOp === 0) ? '设置' : firstOp + '倍';
+//         console.log('[speed] 扫描完成，候选 ' + pLen + ' 个');
+//         showToast('候选:' + pLen + ' ' + firstName + ' 双指', 3000);
+//       } else {
+//         showToast('快照失败 请重试', 1500);
+//       }
+//     } else if (state === 'SCAN') {
+//       state = 'IDLE';
+//       showToast('已取消扫描', 1500);
+//     } else {
+//       for (var k = 0; k < locked.length; k++) {
+//         var L = locked[k];
+//         writeVal(L.t, L.a >> 2, L.v0);
+//       }
+//       locked = [];
+//       state = 'IDLE';
+//       showToast('已恢复原生倍速', 1500);
+//     }
+//   }
 
-  // 哨兵维持5倍
-  setInterval(function () {
-    if (state !== 'LOCKED' || !views()) return;
-    try {
-      for (var k = locked.length - 1; k >= 0; k--) {
-        var L = locked[k];
-        var v = readVal(L.t, L.a >> 2);
-        if (isNat(v)) { L.v0 = v; writeVal(L.t, L.a >> 2, SPEED_TARGET); }
-        else if (v !== SPEED_TARGET) { writeVal(L.t, L.a >> 2, SPEED_TARGET); }
-      }
-    } catch (e) {
-      locked = [];
-      state = 'IDLE';
-      showToast('锚点失效 请重新三指', 1500);
-    }
-  }, 300);
+//   // 哨兵维持5倍
+//   setInterval(function () {
+//     if (state !== 'LOCKED' || !views()) return;
+//     try {
+//       for (var k = locked.length - 1; k >= 0; k--) {
+//         var L = locked[k];
+//         var v = readVal(L.t, L.a >> 2);
+//         if (isNat(v)) { L.v0 = v; writeVal(L.t, L.a >> 2, SPEED_TARGET); }
+//         else if (v !== SPEED_TARGET) { writeVal(L.t, L.a >> 2, SPEED_TARGET); }
+//       }
+//     } catch (e) {
+//       locked = [];
+//       state = 'IDLE';
+//       showToast('锚点失效 请重新三指', 1500);
+//     }
+//   }, 300);
 
-  // 手势路由（区域划分）
-  var __lastTri = 0, __lastQuad = 0;
-  try {
-    wx.onTouchStart(function (e) {
-      if (!e || !e.touches) return;
-      var n = e.touches.length, now = Date.now();
-      if (n === 3) {
-        if (now - __lastTri < 800) return;
-        __lastTri = now;
-        triFinger();
-      } else if (n === 2) {
-        var touches = e.touches;
-        var bottomThreshold = screenHeight * 0.88;
-        var allBottom = true, allTop = true;
-        for (var i = 0; i < touches.length; i++) {
-          var y = touches[i].clientY;
-          if (y < bottomThreshold) allBottom = false;
-          if (y >= bottomThreshold) allTop = false;
-        }
-        if (allBottom) {
-          // 下方12%区域 → 切换时间作弊
-          if (globalObj.toggleTimeCheat) {
-            globalObj.toggleTimeCheat();
-          }
-          return;
-        } else if (allTop) {
-          // 上方88%区域 → 速度过滤
-          if (now - __lastQuad < 800) return;
-          __lastQuad = now;
-          quadFinger();
-        }
-      }
-    });
-  } catch (e) {}
+//   // 手势路由（区域划分）
+//   var __lastTri = 0, __lastQuad = 0;
+//   try {
+//     wx.onTouchStart(function (e) {
+//       if (!e || !e.touches) return;
+//       var n = e.touches.length, now = Date.now();
+//       if (n === 3) {
+//         if (now - __lastTri < 800) return;
+//         __lastTri = now;
+//         triFinger();
+//       } else if (n === 2) {
+//         var touches = e.touches;
+//         var bottomThreshold = screenHeight * 0.88;
+//         var allBottom = true, allTop = true;
+//         for (var i = 0; i < touches.length; i++) {
+//           var y = touches[i].clientY;
+//           if (y < bottomThreshold) allBottom = false;
+//           if (y >= bottomThreshold) allTop = false;
+//         }
+//         if (allBottom) {
+//           // 下方12%区域 → 切换时间作弊
+//           if (globalObj.toggleTimeCheat) {
+//             globalObj.toggleTimeCheat();
+//           }
+//           return;
+//         } else if (allTop) {
+//           // 上方88%区域 → 速度过滤
+//           if (now - __lastQuad < 800) return;
+//           __lastQuad = now;
+//           quadFinger();
+//         }
+//       }
+//     });
+//   } catch (e) {}
 
-  globalObj.speedStatus = function () {
-    var info = {
-      state: state,
-      target: SPEED_TARGET,
-      candidates: state === 'SCAN' ? pLen : 0,
-      stepIndex: stepIndex,
-      nextStep: stepValues[stepIndex],
-      locked: locked.map(function (L) {
-        return { addr: '0x' + L.a.toString(16), type: L.t === 0 ? 'int' : 'float',
-                 current: views() ? readVal(L.t, L.a >> 2) : null, native: L.v0 };
-      })
-    };
-    console.log('[speed]', info);
-    return info;
-  };
-  globalObj.speedOff = function () {
-    if (state === 'LOCKED') {
-      for (var k = 0; k < locked.length; k++) {
-        var L = locked[k];
-        writeVal(L.t, L.a >> 2, L.v0);
-      }
-    }
-    locked = [];
-    state = 'IDLE';
-    showToast('已强制解除', 1500);
-    return true;
-  };
+//   globalObj.speedStatus = function () {
+//     var info = {
+//       state: state,
+//       target: SPEED_TARGET,
+//       candidates: state === 'SCAN' ? pLen : 0,
+//       stepIndex: stepIndex,
+//       nextStep: stepValues[stepIndex],
+//       locked: locked.map(function (L) {
+//         return { addr: '0x' + L.a.toString(16), type: L.t === 0 ? 'int' : 'float',
+//                  current: views() ? readVal(L.t, L.a >> 2) : null, native: L.v0 };
+//       })
+//     };
+//     console.log('[speed]', info);
+//     return info;
+//   };
+//   globalObj.speedOff = function () {
+//     if (state === 'LOCKED') {
+//       for (var k = 0; k < locked.length; k++) {
+//         var L = locked[k];
+//         writeVal(L.t, L.a >> 2, L.v0);
+//       }
+//     }
+//     locked = [];
+//     state = 'IDLE';
+//     showToast('已强制解除', 1500);
+//     return true;
+//   };
 
-  globalObj.__speedV11 = true;
-  console.log('%c[wxhook v11.1] 速度模块已装载', 'color:#0a0;font-weight:bold',
-    '\n流程：三指扫描 → 双指按序过滤（3→1→设置→2→1循环）',
-    '\n候选≤3自动锁定5倍，三指解除',
-    '\n双指操作区域：上方88%（速度过滤），下方12%（时间作弊开关）');
-  showToast('速度模块 v11.1 已启动', 2000);
-})();
+//   globalObj.__speedV11 = true;
+//   console.log('%c[wxhook v11.1] 速度模块已装载', 'color:#0a0;font-weight:bold',
+//     '\n流程：三指扫描 → 双指按序过滤（3→1→设置→2→1循环）',
+//     '\n候选≤3自动锁定5倍，三指解除',
+//     '\n双指操作区域：上方88%（速度过滤），下方12%（时间作弊开关）');
+//   showToast('速度模块 v11.1 已启动', 2000);
+// })();
 
 /* ============ 内存扫描套件 v6.1 ============ */
 (function () {
@@ -652,4 +652,328 @@
     '\n3. 按提示每点一次倍速按钮调一次 GameGlobal.vfilter(新数字)',
     '\n4. 候选剩个位数后逐个 vwrite(地址,10) 试速度',
     '\n5. 确认后 GameGlobal.vwatch(地址, 10) 锁定');
+})();
+
+/* ============ [模块④] 倒计时手动扫描工具箱（来自 v4） ============ */
+(function () {
+  'use strict';
+  var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
+  if (G.__hookScan) { console.log('[scan-tool] 已加载'); return; }
+
+  // ----- 复用已有的 wasm 访问函数 -----
+  function getMem() { return G.getWasmMem ? G.getWasmMem() : null; }
+  function memReady() { return G.wasmmemReady ? G.wasmmemReady() : false; }
+
+  // ----- 扫描三件套 -----
+  G.rscan = function (low, high) {
+    var buf = getMem();
+    if (!buf) { console.warn('[rscan] 内存未就绪'); return 0; }
+    var f32 = new Float32Array(buf.buffer), i32 = new Int32Array(buf.buffer);
+    var map = {}, loMs = Math.max(1024, low * 1000), hiMs = high * 1000;
+    for (var i = 262144; i < f32.length; i++) {
+      var fv = f32[i];
+      if (fv >= low && fv <= high && fv === fv) { map[i << 2] = 'f32'; continue; }
+      var iv = i32[i];
+      if (iv >= loMs && iv <= hiMs) map[i << 2] = 'i32ms';
+    }
+    G.__cand = Object.keys(map).map(function (a) {
+      return { a: +a, t: map[a], last: undefined };
+    });
+    console.log('[rscan]', low + '~' + high + 's 候选:', G.__cand.length);
+    if (G.__cand.length <= 30) G.list();
+    return G.__cand.length;
+  };
+
+  function _read(c, dv) {
+    return c.t === 'i32ms' ? dv.getInt32(c.a, true) / 1000 : dv.getFloat32(c.a, true);
+  }
+
+  G.snap = function () {
+    if (!G.__cand || !G.__cand.length) return console.warn('[snap] 先 rscan');
+    var dv = new DataView(getMem().buffer);
+    G.__snapT = Date.now();
+    G.__cand.forEach(function (c) { c.last = _read(c, dv); });
+    console.log('[snap] 已记录', G.__cand.length, '个基准值');
+  };
+
+  G.rdiff = function (dropSec, eps) {
+    if (!G.__cand || !G.__cand.length) return 0;
+    var dv = new DataView(getMem().buffer);
+    if (dropSec == null) dropSec = (Date.now() - (G.__snapT || Date.now())) / 1000;
+    if (eps == null) eps = Math.max(1, dropSec * 0.45);
+    G.__cand = G.__cand.filter(function (c) {
+      var now = _read(c, dv);
+      return now >= 0 && now < 36000 &&
+             Math.abs((c.last - now) - dropSec) < eps;
+    });
+    console.log('[rdiff] 预期↓' + dropSec.toFixed(1) + 's 剩:', G.__cand.length);
+    if (G.__cand.length <= 10) G.list();
+    return G.__cand.length;
+  };
+
+  G.list = function () {
+    if (!G.__cand || !G.__cand.length) return console.warn('无候选');
+    var dv = new DataView(getMem().buffer);
+    console.table(G.__cand.map(function (c) {
+      return { addr: '0x' + c.a.toString(16), type: c.t,
+               cur: (+_read(c, dv)).toFixed(2),
+               last: c.last == null ? '-' : (+c.last).toFixed(2) };
+    }));
+  };
+
+  // ----- 写入 -----
+  G.poke = function (addr, sec) {
+    var a = typeof addr === 'string' ? parseInt(addr, 16) : addr;
+    var c = (G.__cand || []).find(function (x) { return x.a === a; });
+    var dv = new DataView(getMem().buffer);
+    if (c && c.t === 'i32ms') dv.setInt32(a, Math.round(sec * 1000), true);
+    else dv.setFloat32(a, sec, true);
+    console.log('[poke] 0x' + a.toString(16), '←', sec);
+  };
+
+  G.set = function (sec) {
+    if (!G.__cand || !G.__cand.length) return console.warn('请先 rscan/addTime');
+    var dv = new DataView(getMem().buffer);
+    G.__cand.forEach(function (c) {
+      if (c.t === 'i32ms') dv.setInt32(c.a, Math.round(sec * 1000), true);
+      else dv.setFloat32(c.a, sec, true);
+    });
+    console.log('%c[set] ' + G.__cand.length + ' 个地址 → ' + sec + ' 秒',
+                'color:#0a0;font-weight:bold');
+  };
+
+  // ----- 一键加时（半自动） -----
+  G.addTime = async function (targetSec) {
+    targetSec = targetSec || 9999;
+    if (!memReady()) return console.warn('内存未就绪');
+    console.log('%c[addTime] 开始…这 30 秒请留在本关并让它自然倒数', 'color:#06c;font-weight:bold');
+
+    G.rscan(196, 620);
+    if (!G.__cand.length) {
+      console.warn('扫不到东西：请先点击豆子启动倒计时，再重新执行 addTime');
+      return;
+    }
+    var round = 0;
+    while (G.__cand.length > 1 && round < 4) {
+      round++;
+      await new Promise(function (r) { setTimeout(r, 5200); });
+      G.snap();
+      await new Promise(function (r) { setTimeout(r, 200); });
+      G.rdiff();
+      if (!G.__cand.length) return console.warn('候选全灭，请等几秒重试 addTime');
+    }
+    G.set(targetSec);
+    console.log('%c✅ 完成！剩余时间 → ' + targetSec + ' 秒 (' +
+      G.__cand.map(function (c) { return '0x' + c.a.toString(16); }).join(', ') + ')',
+      'color:#d00;font-weight:bold');
+  };
+
+  // ----- 全自动哨兵 -----
+  G._ap = { on: false, timer: null, st: 'idle', list: null, v0: null,
+            t0: 0, lastFire: 0, idleLast: 0, busy: false };
+
+  function _apVals(arr) {
+    var dv = new DataView(getMem().buffer), o = [];
+    for (var i = 0; i < arr.length; i++) o.push(dv.getFloat32(arr[i], true));
+    return o;
+  }
+
+  async function _apTick() {
+    var A = G._ap;
+    if (!A.on || A.busy || !memReady()) return;
+    A.busy = true;
+    try {
+      var f32 = new Float32Array(getMem().buffer);
+
+      if (A.st === 'idle') {
+        if (Date.now() - A.lastFire < 120000) return;
+        if (Date.now() - A.idleLast < 7000)  return;
+        A.idleLast = Date.now();
+        var ad = [], CAP = 400000;
+        for (var i = 131072; i < f32.length; i++) {
+          var v = f32[i];
+          if (v === v && v >= 198 && v <= 616) { ad.push(i << 2); if (ad.length >= CAP) break; }
+        }
+        if (ad.length >= CAP) { console.log('[AP] 本轮噪音过大，跳过'); return; }
+        if (!ad.length) return;
+        A.list = ad; A.v0 = _apVals(ad); A.t0 = Date.now(); A.st = 'w1';
+        console.log('[AP] 发现疑似倒计时群体:', ad.length, '个');
+        return;
+      }
+
+      if (A.st === 'w1' || A.st === 'w2') {
+        var cur = _apVals(A.list);
+        var dt = (Date.now() - A.t0) / 1000;
+        var lo = Math.max(dt - 1.5, 0), hi = dt + 1.5;
+        var keep = [];
+        for (var k = 0; k < A.list.length; k++) {
+          var d = A.v0[k] - cur[k];
+          if (d >= lo && d <= hi && cur[k] > 140 && cur[k] < 620) keep.push(k);
+        }
+        console.log('[AP][' + A.st + '] Δt=' + dt.toFixed(1) + 's 保留', keep.length, '/', A.list.length);
+        if (!keep.length) { A.st = 'idle'; A.list = null; return; }
+
+        var na = [], nv = [];
+        keep.forEach(function (idx) { na.push(A.list[idx]); nv.push(cur[idx]); });
+        A.list = na; A.v0 = nv; A.t0 = Date.now();
+
+        if (A.st === 'w1') { A.st = 'w2'; return; }
+
+        /* 两轮见证完毕 → 动手 */
+        if (na.length <= 8) {
+          var dv = new DataView(getMem().buffer);
+          na.forEach(function (a) { dv.setFloat32(a, 9999, true); });
+          A.lastFire = Date.now();
+          console.log('%c[AP] 🔥 已自动写入 9999 秒 @ ' +
+            na.map(function (a) { return '0x' + a.toString(16); }).join(', '),
+            'color:#d00;font-weight:bold');
+        } else {
+          console.log('[AP] 幸存者过多(' + na.length + ')，本轮放弃，下一关再试');
+        }
+        A.st = 'idle'; A.list = null;
+      }
+    } catch (e) { A.st = 'idle'; }
+    finally { A.busy = false; }
+  }
+
+  G.autopilotStart = function (ivMs) {
+    if (G._ap.on) return console.warn('哨兵已在运行');
+    G._ap.on = true; G._ap.st = 'idle';
+    G._ap.timer = setInterval(_apTick, ivMs || 4000);
+    console.log('%c[AP] 全自动哨兵已开启：%c此后每关倒计时一起步就会被改成9999',
+                'color:#0a0;font-weight:bold', '');
+    console.log('关闭命令: GameGlobal.autopilotStop()');
+  };
+
+  G.autopilotStop = function () {
+    clearInterval(G._ap.timer);
+    G._ap.on = false; G._ap.st = 'idle'; G._ap.list = null;
+    console.log('[AP] 已关闭');
+  };
+
+  // ----- 冻结/解冻 -----
+  G.unfreeze = function () {
+    if (G.__ftick) { clearInterval(G.__ftick); G.__ftick = null; }
+    console.log('unfreeze ok');
+  };
+  G.freeze = function (val, iv) {
+    G.unfreeze();
+    var cands = (G.__cand || []).slice();
+    G.__ftick = setInterval(function () {
+      var dv = new DataView(getMem().buffer);
+      cands.forEach(function (c) {
+        if (c.t === 'i32ms') dv.setInt32(c.a, Math.round(val * 1000), true);
+        else dv.setFloat32(c.a, val, true);
+      });
+    }, iv || 16);
+    console.log('[freeze] 冻结中', cands.length, '个地址');
+  };
+
+  // ----- 杂项 -----
+  G.G = G;
+  G.__hookScan = true;
+  console.log('%c[scan-tool v4] 倒计时手动扫描工具箱已就绪', 'color:#0a0;font-weight:bold',
+    '\n── 半自动 ──  进关开表后执行:  GameGlobal.addTime()',
+    '\n── 全自动 ──  加载后开一次:    GameGlobal.autopilotStart()',
+    '\n其余: set / poke / rscan / snap / rdiff / list / freeze / unfreeze');
+})();
+
+
+/* ============ [模块⑤] 倒计时快速扫描手势 ============ */
+(function () {
+  'use strict';
+  var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
+  if (G.__scanGesture) { console.log('[scan-gesture] 已加载'); return; }
+
+  // 弹窗工具（兼容微信和浏览器控制台）
+  function showToast(msg, dur) {
+    dur = dur || 2000;
+    try {
+      if (typeof wx !== 'undefined' && wx.showToast) {
+        wx.showToast({ title: msg, icon: 'none', duration: dur });
+      } else {
+        console.log('[toast] ' + msg);
+      }
+    } catch (e) {
+      console.log('[toast] ' + msg);
+    }
+  }
+
+  var lastTri = 0, lastDual = 0;
+  var dualPending = false; // 防止连点
+
+  // 绑定触摸事件
+  try {
+    wx.onTouchStart(function (e) {
+      if (!e || !e.touches) return;
+      var n = e.touches.length;
+      var now = Date.now();
+
+      // ===== 三指：扫描 =====
+      if (n === 3) {
+        if (now - lastTri < 1000) return;          // 防抖
+        lastTri = now;
+        if (typeof G.rscan === 'function') {
+          var cnt = G.rscan(206, 214);             // 范围覆盖 3:30 附近
+          showToast('扫描候选: ' + cnt + ' 个', 2000);
+          console.log('[scan-gesture] 三指扫描完成，候选数:', cnt);
+        } else {
+          showToast('rscan 未定义，请确保模块④已加载', 2000);
+        }
+        return;
+      }
+
+      // ===== 双指：快照 + 延迟过滤 =====
+      if (n === 2) {
+        if (now - lastDual < 2000) return;         // 防抖
+        lastDual = now;
+        if (dualPending) return;
+        dualPending = true;
+
+        if (typeof G.snap === 'function' && typeof G.rdiff === 'function') {
+          G.snap();
+          showToast('已拍快照，等待1秒后过滤...', 1500);
+          console.log('[scan-gesture] 双指触发 snap，1秒后 rdiff');
+
+          setTimeout(function () {
+            try {
+              var remaining = G.rdiff(6, 2);       // 预期下降6秒，误差±2秒
+              console.log('[scan-gesture] rdiff 结果，候选剩余:', remaining);
+
+              if (remaining === 0) {
+                showToast('过滤后无候选，请重试（可能时间误差大）', 2500);
+              } else if (remaining === 1) {
+                // 唯一候选 → 自动锁定 9999 秒
+                if (typeof G.set === 'function') {
+                  G.set(9999);
+                  var addr = (G.__cand && G.__cand[0]) ? '0x' + G.__cand[0].a.toString(16) : '未知';
+                  var msg = '✅ 已锁定 ' + addr + ' = 9999秒';
+                  showToast(msg, 4000);
+                  console.log('%c[scan-gesture] ' + msg, 'color:#d00;font-weight:bold');
+                } else {
+                  showToast('set 未定义', 1500);
+                }
+              } else {
+                showToast('候选 ' + remaining + ' 个，请再次双指过滤', 2500);
+              }
+            } catch (err) {
+              showToast('过滤出错: ' + err.message, 2000);
+              console.error('[scan-gesture] 错误:', err);
+            }
+            dualPending = false;
+          }, 1000);   // 延迟1秒，让游戏继续走一小段时间
+        } else {
+          showToast('snap/rdiff 未定义，请确保模块④已加载', 2000);
+          dualPending = false;
+        }
+      }
+    });
+  } catch (e) {
+    console.warn('[scan-gesture] 触摸事件绑定失败:', e.message);
+  }
+
+  G.__scanGesture = true;
+  console.log('%c[scan-gesture] 倒计时快速扫描手势已启用', 'color:#0a0;font-weight:bold',
+    '\n三指 → rscan(206,214)（显示候选数）',
+    '\n双指 → snap，1秒后 rdiff(6,2)，若唯一则自动锁定9999并显示地址');
 })();
