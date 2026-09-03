@@ -1,7 +1,7 @@
 /* =============================================================
- * wxhook.js 合并版 —— 动态时间作弊（状态校正）+ 广告Hook + 传送带档位
+ * wxhook.js 合并版 —— 动态时间作弊（轮询驱动）+ 广告Hook + 传送带档位
  * -------------------------------------------------------------
- *  模块① 倒计时锚点哨兵 v10（校正状态，5分钟内视为未开启）
+ *  模块① 倒计时锚点哨兵 v9（轮询校正）
  *         LeftTime@0x319eb54，偏移量 60000 秒，
  *         轮询内存值动态触发 30/10 秒提示和周期重置
  *  模块② 广告 Hook v1
@@ -11,7 +11,7 @@
  *  手势：上方88%双指 → 速度过滤，下方12%双指 → 时间作弊开关
  * ============================================================= */
 
-/* ============ [模块①] 倒计时锚点哨兵 v10 —— 状态校正 ============ */
+/* ============ [模块①] 倒计时锚点哨兵 v9 —— 轮询驱动 ============ */
 (function () {
   'use strict';
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
@@ -19,13 +19,12 @@
 
   var ANCHOR      = 0x319eb54;
   var TARGET_SEC  = 60000;          // 偏移量 = 1000 分钟
-  var CORRECT_THRESHOLD = 300;      // 5分钟，视为未开启的阈值
 
-  var timeCheatOn = true;           // 默认开启（但会立即校正）
+  var timeCheatOn = true;           // 默认开启
   var originalLevelTime = null;     // 原定关卡时间（秒）
-  var pollTimer = null;
-  var triggered30 = false;
-  var triggered10 = false;
+  var pollTimer = null;            // 轮询定时器句柄
+  var triggered30 = false;         // 当前周期是否已触发30秒提示
+  var triggered10 = false;         // 当前周期是否已触发10秒提示
 
   G.__timeCheatOn = true;
 
@@ -55,48 +54,25 @@
     }
   }
 
-  /* ========== 校正状态 ========== */
-  function calibrateState() {
-    var cur = getAnchorValue();
-    if (!Number.isFinite(cur) || cur < 0) return;
-    var real = cur - TARGET_SEC;
-    // 如果当前值小于偏移量，或真实剩余时间 <= 300秒，视为未开启
-    if (cur < TARGET_SEC || real <= CORRECT_THRESHOLD) {
-      if (timeCheatOn) {
-        timeCheatOn = false;
-        G.__timeCheatOn = false;
-        stopPoll();
-        // 重置提示标记
-        triggered30 = false;
-        triggered10 = false;
-        console.log('[timeCheat] 状态校正：未开启');
-      }
-    } else {
-      // 当前值明显大于偏移量，视为已开启
-      if (!timeCheatOn) {
-        timeCheatOn = true;
-        G.__timeCheatOn = true;
-        startPoll();
-        console.log('[timeCheat] 状态校正：已开启');
-      }
-    }
-  }
-
   /* ========== 轮询核心 ========== */
   function pollLoop() {
-    if (!timeCheatOn) return;
+    if (!timeCheatOn) return;          // 作弊关闭则停止轮询
     if (!G.wasmmemReady()) return;
 
     try {
       var cur = getAnchorValue();
       if (!Number.isFinite(cur) || cur < 0) return;
+
+      // 真实剩余时间 = 当前值 - 偏移量
       var real = cur - TARGET_SEC;
 
-      // 周期结束
+      // 如果 real <= 0，表示周期结束
       if (real <= 0) {
+        // 重置周期
         if (originalLevelTime !== null && originalLevelTime > 0) {
           showToast('作弊前的时间已经到了，现在重新计时', 3000);
           setAnchorValue(originalLevelTime + TARGET_SEC);
+          // 重置提示标记
           triggered30 = false;
           triggered10 = false;
           console.log('[timeCheat] 周期重置，新值 = ' + (originalLevelTime + TARGET_SEC).toFixed(0));
@@ -106,24 +82,27 @@
         return;
       }
 
-      // 30秒提示
+      // 触发30秒提示
       if (real <= 30 && !triggered30) {
         triggered30 = true;
         showToast('作弊前的30秒倒计时', 2000);
         console.log('[timeCheat] 30秒提示触发');
       }
-      // 10秒提示
+      // 触发10秒提示
       if (real <= 10 && !triggered10) {
         triggered10 = true;
         showToast('作弊前的10秒倒计时', 2000);
         console.log('[timeCheat] 10秒提示触发');
       }
-    } catch (e) {}
+    } catch (e) {
+      // 忽略轮询错误
+    }
   }
 
+  /* ========== 启动/停止轮询 ========== */
   function startPoll() {
     if (pollTimer) return;
-    pollTimer = setInterval(pollLoop, 500);
+    pollTimer = setInterval(pollLoop, 500);  // 每0.5秒检查一次
     console.log('[timeCheat] 轮询已启动');
   }
   function stopPoll() {
@@ -134,56 +113,49 @@
     }
   }
 
-  /* ========== 切换作弊（带状态校正） ========== */
+  /* ========== 切换作弊 ========== */
   G.toggleTimeCheat = function () {
-    var cur = getAnchorValue();
-    if (!Number.isFinite(cur) || cur < 0) {
+    var current = getAnchorValue();
+    if (!Number.isFinite(current) || current < 0) {
       showToast('当前时间无效', 1500);
       return;
     }
 
-    // 1. 校正状态
-    calibrateState();
-
-    // 2. 根据校正后的状态执行切换
     if (timeCheatOn) {
       // ----- 关闭作弊 -----
-      var real = cur - TARGET_SEC;
-      if (real <= CORRECT_THRESHOLD) {
-        showToast('不宜减少，无法关闭（剩余时间不足5分钟）', 2000);
-        console.log('[timeCheat] 关闭失败：真实剩余=' + real.toFixed(0) + 's');
+      var newVal = current - TARGET_SEC;
+      if (newVal <= 0) {
+        showToast('不宜减少，无法关闭', 2000);
+        console.log('[timeCheat] 关闭失败：current=' + current + ', newVal=' + newVal);
         return;
       }
-      // 执行关闭
-      setAnchorValue(real); // 直接写回真实时间
+      setAnchorValue(newVal);
       timeCheatOn = false;
       G.__timeCheatOn = false;
       stopPoll();
+      // 重置提示标记（避免下次开启时残留）
       triggered30 = false;
       triggered10 = false;
       showToast('作弊已关闭，恢复时间', 2000);
-      console.log('%c[timeCheat] 作弊关闭，内存设为 ' + real.toFixed(0), 'color:#d00;font-weight:bold');
+      console.log('%c[timeCheat] 作弊关闭，内存设为 ' + newVal.toFixed(0), 'color:#d00;font-weight:bold');
     } else {
       // ----- 开启作弊 -----
-      var realTime = (cur < TARGET_SEC) ? cur : cur - TARGET_SEC;
-      if (realTime <= 0) {
-        showToast('当前时间无效', 1500);
-        return;
-      }
-      // 记录原始时间（如果未记录）
-      if (originalLevelTime === null && realTime > 10 && realTime < 600) {
-        originalLevelTime = realTime;
+      // 如果 originalLevelTime 为空且当前值是正常范围，则记录
+      if (originalLevelTime === null && isNormal(current)) {
+        originalLevelTime = current;
         console.log('[timeCheat] 记录原定关卡时间: ' + originalLevelTime.toFixed(0) + '秒');
       }
-      // 将内存设为 真实时间 + 偏移
-      setAnchorValue(realTime + TARGET_SEC);
+      // 无条件增加偏移
+      setAnchorValue(current + TARGET_SEC);
       timeCheatOn = true;
       G.__timeCheatOn = true;
+      // 重置提示标记（新周期开始）
       triggered30 = false;
       triggered10 = false;
-      startPoll();
       showToast('作弊开启，偏移 ' + TARGET_SEC + ' 秒', 2500);
-      console.log('%c[timeCheat] 作弊开启，内存设为 ' + (realTime + TARGET_SEC).toFixed(0), 'color:#0a0;font-weight:bold');
+      console.log('%c[timeCheat] 作弊开启，内存增加 ' + TARGET_SEC + ' 秒', 'color:#0a0;font-weight:bold');
+      // 启动轮询（如果未启动）
+      startPoll();
     }
   };
 
@@ -201,8 +173,10 @@
         setAnchorValue(v + TARGET_SEC);
         var t = new Date().toLocaleTimeString();
         console.log('%c⚡[' + t + '] 哨兵检测到正常倒计时(' + v.toFixed(1) + 's) → 已增加 ' + TARGET_SEC + ' 秒', 'color:#d00;font-weight:bold');
+        // 重置提示标记（因为新周期开始）
         triggered30 = false;
         triggered10 = false;
+        // 确保轮询在运行
         if (!pollTimer && timeCheatOn) startPoll();
       }
     } catch (e) {}
@@ -212,20 +186,18 @@
   var waitTimer = setInterval(function () {
     if (G.wasmmemReady()) {
       clearInterval(waitTimer);
-      // 初始校正状态
-      calibrateState();
-      // 如果校正后为开启，则确保轮询运行
+      // 默认开启
       if (timeCheatOn) {
-        startPoll();
-        // 同时检查是否已加偏移，如果没有则加
-        var cur = getAnchorValue();
-        if (cur < TARGET_SEC && cur > 0) {
-          // 未加偏移，但状态为开启，需要加偏移
-          if (originalLevelTime === null && isNormal(cur)) {
-            originalLevelTime = cur;
-          }
-          setAnchorValue(cur + TARGET_SEC);
-          console.log('%c[init] 初始校正开启，已增加偏移', 'color:#0a0;font-weight:bold');
+        var initVal = getAnchorValue();
+        if (isNormal(initVal)) {
+          originalLevelTime = initVal;
+          setAnchorValue(initVal + TARGET_SEC);
+          console.log('%c[init] 初始开启，原定时间=' + initVal.toFixed(0) + '，已增加 ' + TARGET_SEC + ' 秒', 'color:#0a0;font-weight:bold');
+          triggered30 = false;
+          triggered10 = false;
+          startPoll();
+        } else {
+          console.log('[init] 当前值异常，等待正常倒计时出现');
         }
       }
       // 哨兵每0.8秒运行
@@ -261,8 +233,9 @@
 
   G.G = G;
   G.__hookV5 = true;
-  console.log('%c[wxhook v10] 倒计时模块已装载（状态校正，5分钟内视为未开启）', 'color:#0a0;font-weight:bold',
-    '\n偏移量60000秒，轮询内存触发提示和重置，下方12%区域双指切换');
+  console.log('%c[wxhook v9] 倒计时模块已装载（轮询驱动，偏移60000秒）', 'color:#0a0;font-weight:bold',
+    '\n开启后内存值 = 真实剩余时间 + 60000，轮询内存触发提示和重置',
+    '\n下方12%区域双指点击切换开关');
 })();
 
 /* ============ [模块②] 广告 Hook ============ */
