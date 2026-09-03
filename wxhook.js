@@ -1,33 +1,221 @@
 /* =============================================================
- * wxhook.js 合并版 —— 倒计时9999 + 广告弹窗Hook + 传送带档位（3合1）
+ * wxhook.js 合并版 —— 动态时间作弊（轮询驱动）+ 广告Hook + 传送带档位
  * -------------------------------------------------------------
- *  模块① 倒计时锚点哨兵 v5（原第二个文件）
- *         LeftTime@0x319eb54，每 0.8 秒巡检，自动覆写为 99999 秒
- *  模块② 广告 Hook v1（原第二个文件）
- *         劫持 wx.createRewardedVideoAd，onClose 伪造 isEnded=true
- *  模块③ 速度模块 v11.1（原第一个文件，含 Toast 弹窗）
- *         传送带档位：三指扫描 → 双指档位过滤(3→1→设置→2→1) → 锁定5倍
+ *  模块① 倒计时锚点哨兵 v10（修正状态误判）
+ *         LeftTime@0x319eb54，偏移量 60000 秒，
+ *         轮询内存值动态触发提示和重置，并在关闭分支增加5分钟阈值修正
+ *  模块② 广告 Hook v1
+ *  模块③ 速度模块 v11.1
+ *  附加  内存扫描套件 v6.1
  * -------------------------------------------------------------
- *  合并说明：第一个文件是被上一轮改丢"倒计时9999"的版本，
- *            现以第二个文件为底座，并入第一个文件的档位+弹窗模块，
- *            三个功能全部保留，各模块操作不同内存地址，互不冲突。
+ *  手势：上方88%双指 → 速度过滤，下方12%双指 → 时间作弊开关
  * ============================================================= */
 
-/* ============ [模块①] 倒计时锚点哨兵 v5 —— 全自动零交互 ============ */
-/* 原理：LeftTime 字段位于固定偏移 0x319eb54，
- *       每 0.8 秒检查一次；若发现有正常倒计时数值则立刻覆写为 9999 */
+/* ============ [模块①] 倒计时锚点哨兵 v10 —— 轮询驱动 + 状态修正 ============ */
 (function () {
   'use strict';
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
   if (G.__hookV5) { console.log('[wxhook] 已加载'); return; }
 
-  /* ========== 可调参数 ========== */
-  var ANCHOR      = 0x319eb54;   // ⭐ LeftTime 字段的绝对地址（经验证 1~4 关通用）
-  var TARGET_SEC  = 99999;         // 写入的目标秒数（166 分多）
-  var MIN_VAL     = 50;           // 视为“正在倒数中”的最小阈值（低于此可能是过场）
-  var MAX_VAL     = 620;          // 视为“正在倒数中”的最大阈值（超过此是总时长备份）
+  var ANCHOR      = 0x319eb54;
+  var TARGET_SEC  = 60000;          // 偏移量 = 1000 分钟
 
-  /* ========== 基础工具（保底，方便万一要重新定位）========== */
+  var timeCheatOn = true;           // 默认开启
+  var originalLevelTime = null;     // 原定关卡时间（秒）
+  var pollTimer = null;            // 轮询定时器句柄
+  var triggered30 = false;         // 当前周期是否已触发30秒提示
+  var triggered10 = false;         // 当前周期是否已触发10秒提示
+
+  G.__timeCheatOn = true;
+
+  /* ========== 基础工具 ========== */
+  function getAnchorValue() {
+    if (!G.wasmmemReady()) return NaN;
+    return new DataView(G.getWasmMem().buffer).getFloat32(ANCHOR, true);
+  }
+  function setAnchorValue(val) {
+    if (!G.wasmmemReady()) return;
+    new DataView(G.getWasmMem().buffer).setFloat32(ANCHOR, val, true);
+  }
+  function isNormal(v) {
+    return Number.isFinite(v) && v > 10 && v < 600;
+  }
+
+  function showToast(msg, dur) {
+    dur = dur || 2000;
+    try {
+      if (typeof wx !== 'undefined' && wx.showToast) {
+        wx.showToast({ title: msg, icon: 'none', duration: dur });
+      } else {
+        console.log('[toast] ' + msg);
+      }
+    } catch (e) {
+      console.log('[toast] ' + msg);
+    }
+  }
+
+  /* ========== 轮询核心 ========== */
+  function pollLoop() {
+    if (!timeCheatOn) return;          // 作弊关闭则停止轮询
+    if (!G.wasmmemReady()) return;
+
+    try {
+      var cur = getAnchorValue();
+      if (!Number.isFinite(cur) || cur < 0) return;
+
+      // 真实剩余时间 = 当前值 - 偏移量
+      var real = cur - TARGET_SEC;
+
+      // 如果 real <= 0，表示周期结束
+      if (real <= 0) {
+        // 重置周期
+        if (originalLevelTime !== null && originalLevelTime > 0) {
+          showToast('作弊前的时间已经到了，现在重新计时', 3000);
+          setAnchorValue(originalLevelTime + TARGET_SEC);
+          // 重置提示标记
+          triggered30 = false;
+          triggered10 = false;
+          console.log('[timeCheat] 周期重置，新值 = ' + (originalLevelTime + TARGET_SEC).toFixed(0));
+        } else {
+          console.warn('[timeCheat] 无原始关卡时间，无法重置');
+        }
+        return;
+      }
+
+      // 触发30秒提示
+      if (real <= 30 && !triggered30) {
+        triggered30 = true;
+        showToast('作弊前的30秒倒计时', 2000);
+        console.log('[timeCheat] 30秒提示触发');
+      }
+      // 触发10秒提示
+      if (real <= 10 && !triggered10) {
+        triggered10 = true;
+        showToast('作弊前的10秒倒计时', 2000);
+        console.log('[timeCheat] 10秒提示触发');
+      }
+    } catch (e) {
+      // 忽略轮询错误
+    }
+  }
+
+  /* ========== 启动/停止轮询 ========== */
+  function startPoll() {
+    if (pollTimer) return;
+    pollTimer = setInterval(pollLoop, 500);  // 每0.5秒检查一次
+    console.log('[timeCheat] 轮询已启动');
+  }
+  function stopPoll() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      console.log('[timeCheat] 轮询已停止');
+    }
+  }
+
+  /* ========== 切换作弊 ========== */
+  G.toggleTimeCheat = function () {
+    var current = getAnchorValue();
+    if (!Number.isFinite(current) || current < 0) {
+      showToast('当前时间无效', 1500);
+      return;
+    }
+
+    if (timeCheatOn) {
+      // ========= 关闭作弊分支 =========
+      // ★ 修正：如果当前内存值小于300秒（5分钟），视为尚未作弊，强制转为开启状态
+      if (current < 300) {
+        // 将内部状态设为未开启
+        timeCheatOn = false;
+        G.__timeCheatOn = false;
+        // 重新调用自身，进入开启分支
+        G.toggleTimeCheat();
+        return;
+      }
+
+      var newVal = current - TARGET_SEC;
+      if (newVal <= 0) {
+        showToast('不宜减少，无法关闭', 2000);
+        console.log('[timeCheat] 关闭失败：current=' + current + ', newVal=' + newVal);
+        return;
+      }
+      setAnchorValue(newVal);
+      timeCheatOn = false;
+      G.__timeCheatOn = false;
+      stopPoll();
+      // 重置提示标记（避免下次开启时残留）
+      triggered30 = false;
+      triggered10 = false;
+      showToast('作弊已关闭，恢复时间', 2000);
+      console.log('%c[timeCheat] 作弊关闭，内存设为 ' + newVal.toFixed(0), 'color:#d00;font-weight:bold');
+    } else {
+      // ----- 开启作弊 -----
+      // 如果 originalLevelTime 为空且当前值是正常范围，则记录
+      if (originalLevelTime === null && isNormal(current)) {
+        originalLevelTime = current;
+        console.log('[timeCheat] 记录原定关卡时间: ' + originalLevelTime.toFixed(0) + '秒');
+      }
+      // 无条件增加偏移
+      setAnchorValue(current + TARGET_SEC);
+      timeCheatOn = true;
+      G.__timeCheatOn = true;
+      // 重置提示标记（新周期开始）
+      triggered30 = false;
+      triggered10 = false;
+      showToast('开启时间作弊');
+      console.log('%c[timeCheat] 作弊开启，内存增加 ' + TARGET_SEC + ' 秒', 'color:#0a0;font-weight:bold');
+      // 启动轮询（如果未启动）
+      startPoll();
+    }
+  };
+
+  /* ========== 哨兵（辅助保护） ========== */
+  function patrol() {
+    if (!timeCheatOn || !G.wasmmemReady()) return;
+    try {
+      var v = getAnchorValue();
+      if (isNormal(v)) {
+        // 游戏重置了倒计时，重新增加偏移
+        if (originalLevelTime === null) {
+          originalLevelTime = v;
+          console.log('[timeCheat] 哨兵记录原定关卡时间: ' + originalLevelTime.toFixed(0) + '秒');
+        }
+        setAnchorValue(v + TARGET_SEC);
+        var t = new Date().toLocaleTimeString();
+        console.log('%c⚡[' + t + '] 哨兵检测到正常倒计时(' + v.toFixed(1) + 's) → 已增加 ' + TARGET_SEC + ' 秒', 'color:#d00;font-weight:bold');
+        // 重置提示标记（因为新周期开始）
+        triggered30 = false;
+        triggered10 = false;
+        // 确保轮询在运行
+        if (!pollTimer && timeCheatOn) startPoll();
+      }
+    } catch (e) {}
+  }
+
+  /* ========== 初始化 ========== */
+  var waitTimer = setInterval(function () {
+    if (G.wasmmemReady()) {
+      clearInterval(waitTimer);
+      // 默认开启
+      if (timeCheatOn) {
+        var initVal = getAnchorValue();
+        if (isNormal(initVal)) {
+          originalLevelTime = initVal;
+          setAnchorValue(initVal + TARGET_SEC);
+          console.log('%c[init] 初始开启，原定时间=' + initVal.toFixed(0) + '，已增加 ' + TARGET_SEC + ' 秒', 'color:#0a0;font-weight:bold');
+          triggered30 = false;
+          triggered10 = false;
+          startPoll();
+        } else {
+          console.log('[init] 当前值异常，等待正常倒计时出现');
+        }
+      }
+      // 哨兵每0.8秒运行
+      setInterval(patrol, 800);
+    }
+  }, 500);
+
+  // 暴露工具
   G.getWasmMem = function () {
     if (G.Module && G.Module.HEAPU8 && G.Module.HEAPU8.buffer) return G.Module.HEAPU8;
     return G.EMSCRIPTEN_HEAPU8 || null;
@@ -36,74 +224,39 @@
     var h = G.getWasmMem();
     return !!(h && h.buffer && h.buffer.byteLength > 1024);
   };
-  G.anchorVal = function () {                       // 看一眼锚点当前是什么数
+  G.anchorVal = function () {
     if (!G.wasmmemReady()) return '(未就绪)';
     var v = new DataView(G.getWasmMem().buffer).getFloat32(ANCHOR, true);
     return Number.isFinite(v) ? v.toFixed(2) : 'NaN';
   };
-  G.setAnchor = function (sec) {                    // 手动强制写锚点
+  G.setAnchor = function (sec) {
     if (!G.wasmmemReady()) return console.warn('未就绪');
     new DataView(G.getWasmMem().buffer).setFloat32(ANCHOR, sec || TARGET_SEC, true);
     console.log('[setAnchor] 已写入', sec || TARGET_SEC);
   };
-  G.relocate = function (low, high) {               // 兜底：若某天锚点失效重新找
+  G.relocate = function (low, high) {
     console.warn('请使用以下流程重新定位：');
     console.log(' ① GameGlobal.rscan(' + low + ',' + high + ')');
     console.log(' ② 让它走 6 秒后：snap(); rdiff(6,2)');
     console.log(' ③ 把命中的新地址替换掉本文件里的 ANCHOR 常量');
   };
 
-  /* ========== 全自动哨兵 ========== */
-  var _sentinelStarted = false;
-  function _patrol() {
-    if (!G.wasmmemReady()) return;
-    try {
-      var dv = new DataView(G.getWasmMem().buffer);
-      var v = dv.getFloat32(ANCHOR, true);
-      // 必须是有效浮点 & 处于“活着的倒计时”范围才动手
-      if (Number.isFinite(v) && v > MIN_VAL && v < MAX_VAL) {
-        dv.setFloat32(ANCHOR, TARGET_SEC, true);
-        var t = new Date().toLocaleTimeString();
-        console.log('%c⚡[' + t + '] 检测到倒计时(' + v.toFixed(1) + 's) → 已改为 ' + TARGET_SEC,
-                    'color:#d00;font-weight:bold');
-      }
-    } catch (e) { /* 吞掉瞬时错误 */ }
-  }
-
-  // 等 wasm 就绪后开启巡检循环
-  var _waitTimer = setInterval(function () {
-    if (G.wasmmemReady()) {
-      clearInterval(_waitTimer);
-      _sentinelStarted = true;
-      //console.log('%c[wxhook v5] ✅ 锚点哨兵已上线','color:#0a0;font-weight:bold');
-      //console.log('   监视地址: 0x' + ANCHOR.toString(16));
-      //console.log('   触发条件: 数值出现在 ' + MIN_VAL + '~' + MAX_VAL + ' 秒之间');
-      //console.log('   动作:     覆写为 ' + TARGET_SEC + ' 秒');
-      //console.log('   提示:     G.anchorVal() 随时可查看当前锚点读数');
-      setInterval(_patrol, 800);           // 每 0.8 秒巡一次，代价可忽略
-    }
-  }, 500);
-
   G.G = G;
   G.__hookV5 = true;
-
-  console.log('%c[wxhook v5] 倒计时模块已装载', 'color:#0a0;font-weight:bold',
-    '\n编译完成后无需任何操作，进入关卡即自动触发',
-    '\n调试命令: GameGlobal.anchorVal() / GameGlobal.setAnchor(N) / GameGlobal.relocate(low,high)');
+  console.log('%c[wxhook v10] 倒计时模块已装载（轮询驱动，偏移60000秒，状态修正）', 'color:#0a0;font-weight:bold',
+    '\n开启后内存值 = 真实剩余时间 + 60000，轮询内存触发提示和重置',
+    '\n关闭分支自动检测 <300秒并转为开启，避免错误提示');
 })();
 
-/* ============ [模块②] 广告 Hook v1：劫持 createRewardedVideoAd ============ */
+/* ============ [模块②] 广告 Hook ============ */
 (function () {
   if (wx.createRewardedVideoAd && wx.createRewardedVideoAd.__wxhookAd) {
     console.log('[AD-Hook] 已加载'); return;
   }
-  // ① 第一步：先纯监听不改动 —— 用于确认这条链路真的会被走到
   var _origCreate = wx.createRewardedVideoAd;
   wx.createRewardedVideoAd = function () {
     console.log('%c[AD] createRewardedVideoAd 被调用', 'color:#c60;font-weight:bold');
     var ad = _origCreate.apply(this, arguments);
-
-    // ② 包装 onClose：把 isEnded 强改为 true
     var _origOn = ad.onClose ? ad.onClose.bind(ad) : null;
     if (_origOn) {
       ad.onClose = function (cb) {
@@ -121,18 +274,13 @@
   console.log('[AD-Hook] wx.createRewardedVideoAd 已拦截');
 })();
 
-/* =============================================================
- * [模块③] 速度模块 v11.1 —— 传送带档位 + Toast弹窗（原第一个文件）
- * 流程：三指扫描 → 双指按序过滤（3→1→设置→2→1循环）→ 候选≤3自动锁定5倍
- * ============================================================= */
+/* ============ [模块③] 速度模块 v11.1（上方88%区域双指过滤） ============ */
 (function () {
   'use strict';
-  // 兼容全局对象
   var globalObj = (typeof GameGlobal !== 'undefined') ? GameGlobal :
                   (typeof window !== 'undefined') ? window : global;
   if (globalObj.__speedV11) { console.log('[speed] 已加载'); return; }
 
-  // 内置 Toast
   function showToast(msg, dur) {
     dur = dur || 2000;
     if (globalObj.toast && typeof globalObj.toast === 'function') {
@@ -150,8 +298,19 @@
     }
   }
 
+  var screenHeight = 0;
+  try {
+    var sysInfo = wx.getSystemInfoSync();
+    screenHeight = sysInfo.windowHeight || sysInfo.screenHeight || 0;
+  } catch (e) {}
+  if (!screenHeight) {
+    try { if (typeof window !== 'undefined' && window.innerHeight) screenHeight = window.innerHeight; } catch (e) {}
+  }
+  if (!screenHeight) screenHeight = 800;
+  console.log('[speed] 屏幕高度 = ' + screenHeight + '，下方12%阈值 = ' + (screenHeight * 0.88));
+
   var SPEED_TARGET = 5;
-  var state = 'IDLE';          // IDLE | SCAN | LOCKED
+  var state = 'IDLE';
   var MAXC = 2200000;
   var pAddr, pVal, pType;
   try {
@@ -162,8 +321,6 @@
   var pLen = 0;
   var locked = [];
   var bufId = null, f32v = null, i32v = null;
-
-  // 步骤顺序（0 代表“设置”）
   var stepValues = [3, 1, 0, 2, 1];
   var stepIndex = 0;
 
@@ -215,56 +372,32 @@
       showToast('候选:0 请重新三指', 2000);
       return;
     }
-    var pick = -1, ruleDesc = '';
-    if (pLen === 1) {
-      pick = 0;
-      ruleDesc = '唯一';
-    } else if (pLen === 3) {
-      if (pType[1] === 1) { pick = 1; ruleDesc = '第2(float)'; }
-      else {
-        for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; ruleDesc = '优先float'; break; } }
-        if (pick < 0) { pick = 1; ruleDesc = '第2(int)'; }
-      }
+    var pick = -1;
+    if (pLen === 1) pick = 0;
+    else if (pLen === 3) {
+      if (pType[1] === 1) pick = 1;
+      else { for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; break; } } if (pick < 0) pick = 1; }
     } else {
-      for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; ruleDesc = '优先float'; break; } }
-      if (pick < 0) { pick = (pLen === 1) ? 0 : 1; ruleDesc = 'int'; }
+      for (var r = 0; r < pLen; r++) { if (pType[r] === 1) { pick = r; break; } }
+      if (pick < 0) pick = (pLen === 1) ? 0 : 1;
     }
     if (pick < 0 || pick >= pLen) pick = 0;
-
     var A = pAddr[pick], T = pType[pick], V0 = readVal(T, A >> 2);
     locked = [{ a: A, t: T, v0: V0 }];
     writeVal(T, A >> 2, SPEED_TARGET);
     state = 'LOCKED';
-    var typeLabel = T === 1 ? 'float' : 'int';
-    console.log('%c[speed] ★ 锁定 0x' + A.toString(16) + '(' + typeLabel + ') -> ' + SPEED_TARGET + '倍', 'color:#0a0;font-weight:bold');
+    console.log('%c[speed] ★ 锁定 0x' + A.toString(16) + ' -> ' + SPEED_TARGET + '倍', 'color:#0a0;font-weight:bold');
     showToast('已锁定5倍 三指解除', 2500);
   }
 
   function quadFinger() {
-    if (state !== 'SCAN') {
-      // showToast('请先三指扫描', 1500);
-      return;
-    }
-    if (!views() || !pLen) {
-      showToast('候选为空 请重新三指', 1500);
-      state = 'IDLE';
-      return;
-    }
+    if (state !== 'SCAN') return;
+    if (!views() || !pLen) { showToast('候选为空 请重新三指', 1500); state = 'IDLE'; return; }
     var filterVal = stepValues[stepIndex];
-    var opName = (filterVal === 0) ? '设置' : filterVal + '倍';
     applyFilter(filterVal);
     stepIndex = (stepIndex + 1) % stepValues.length;
-
-    if (pLen === 0) {
-      showToast('候选:0 请重新三指', 2000);
-      state = 'IDLE';
-      return;
-    }
-    if (pLen <= 3) {
-      showToast('候选:' + pLen + ' 自动锁定...', 1500);
-      lockSelect();
-      return;
-    }
+    if (pLen === 0) { showToast('候选:0 请重新三指', 2000); state = 'IDLE'; return; }
+    if (pLen <= 3) { showToast('候选:' + pLen + ' 自动锁定...', 1500); lockSelect(); return; }
     var nextOp = stepValues[stepIndex];
     var nextName = (nextOp === 0) ? '设置' : nextOp + '倍';
     showToast('候选:' + pLen + ' ' + nextName + ' 双指', 2000);
@@ -286,7 +419,7 @@
     } else if (state === 'SCAN') {
       state = 'IDLE';
       showToast('已取消扫描', 1500);
-    } else { // LOCKED
+    } else {
       for (var k = 0; k < locked.length; k++) {
         var L = locked[k];
         writeVal(L.t, L.a >> 2, L.v0);
@@ -297,32 +430,24 @@
     }
   }
 
-  // 哨兵：维持5倍，但优化失效判断
+  // 哨兵维持5倍
   setInterval(function () {
     if (state !== 'LOCKED' || !views()) return;
     try {
       for (var k = locked.length - 1; k >= 0; k--) {
         var L = locked[k];
         var v = readVal(L.t, L.a >> 2);
-        if (isNat(v)) {
-          // 用户手动切换了倍速，更新原生值并覆盖为5
-          L.v0 = v;
-          writeVal(L.t, L.a >> 2, SPEED_TARGET);
-        } else if (v !== SPEED_TARGET) {
-          // 值变为其他（如0），直接覆盖为5，不更新v0，也不失效
-          writeVal(L.t, L.a >> 2, SPEED_TARGET);
-        }
-        // 若 v 等于 5，则不做任何事
+        if (isNat(v)) { L.v0 = v; writeVal(L.t, L.a >> 2, SPEED_TARGET); }
+        else if (v !== SPEED_TARGET) { writeVal(L.t, L.a >> 2, SPEED_TARGET); }
       }
     } catch (e) {
-      // 读取异常则判定失效
       locked = [];
       state = 'IDLE';
       showToast('锚点失效 请重新三指', 1500);
     }
   }, 300);
 
-  // 手势路由
+  // 手势路由（区域划分）
   var __lastTri = 0, __lastQuad = 0;
   try {
     wx.onTouchStart(function (e) {
@@ -333,14 +458,30 @@
         __lastTri = now;
         triFinger();
       } else if (n === 2) {
-        if (now - __lastQuad < 800) return;
-        __lastQuad = now;
-        quadFinger();
+        var touches = e.touches;
+        var bottomThreshold = screenHeight * 0.88;
+        var allBottom = true, allTop = true;
+        for (var i = 0; i < touches.length; i++) {
+          var y = touches[i].clientY;
+          if (y < bottomThreshold) allBottom = false;
+          if (y >= bottomThreshold) allTop = false;
+        }
+        if (allBottom) {
+          // 下方12%区域 → 切换时间作弊
+          if (globalObj.toggleTimeCheat) {
+            globalObj.toggleTimeCheat();
+          }
+          return;
+        } else if (allTop) {
+          // 上方88%区域 → 速度过滤
+          if (now - __lastQuad < 800) return;
+          __lastQuad = now;
+          quadFinger();
+        }
       }
     });
   } catch (e) {}
 
-  // 暴露控制台命令
   globalObj.speedStatus = function () {
     var info = {
       state: state,
@@ -370,24 +511,20 @@
   };
 
   globalObj.__speedV11 = true;
-  console.log('%c[wxhook v11.1] 速度模块已装载（优化哨兵，Toast顺序调整）', 'color:#0a0;font-weight:bold',
+  console.log('%c[wxhook v11.1] 速度模块已装载', 'color:#0a0;font-weight:bold',
     '\n流程：三指扫描 → 双指按序过滤（3→1→设置→2→1循环）',
-    '\n候选≤3自动锁定，三指解除');
+    '\n候选≤3自动锁定5倍，三指解除',
+    '\n双指操作区域：上方88%（速度过滤），下方12%（时间作弊开关）');
   showToast('速度模块 v11.1 已启动', 2000);
 })();
-/* =============================================================
- * 内存扫描套件 v6.1 —— 2026-09-01 倍速定位版
- * 修正（按用户实测反馈）：
- *   ① vlist 加 return，不再是 Undefined
- *   ② 控制台调用前缀必须是 GameGlobal.（G 只是模块内部变量）
- * 新增：倍速 10x 定位流程（见下方说明）
- * ============================================================= */
+
+/* ============ 内存扫描套件 v6.1 ============ */
 (function () {
   'use strict';
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
   if (G.__vscan) { console.log('[vscan] 已加载'); return; }
 
-  var __cands = [];   // 候选: [{a:地址, t:'f'|'i'}]
+  var __cands = [];
   var __lastVal = 0;
 
   function dv() {
@@ -396,7 +533,6 @@
   }
   function fmt(a) { return '0x' + a.toString(16); }
 
-  /* 首扫：全内存找 value（int32 和 float32 双格式） */
   G.vscan = function (value) {
     var d = dv();
     if (!d) return console.warn('[vscan] wasm内存未就绪');
@@ -411,8 +547,7 @@
     for (var a2 = 0; a2 < len; a2 += 4) {
       if (d.getFloat32(a2, true) === fv) __cands.push({ a: a2, t: 'f' });
     }
-    var msg = '[vscan] 首扫 ' + value + ' → ' + __cands.length + ' 个候选';
-    console.log('%c' + msg, 'color:#06c;font-weight:bold');
+    console.log('%c[vscan] 首扫 ' + value + ' → ' + __cands.length + ' 个候选', 'color:#06c;font-weight:bold');
     if (__cands.length === 0) {
       console.warn('没找到！可能存的是"等级索引"：显示2倍速时索引是1，试 GameGlobal.vscan(1)');
     } else {
@@ -421,7 +556,6 @@
     return __cands.length;
   };
 
-  /* 过滤：值变化后，只保留值同步变化的地址 */
   G.vfilter = function (newValue) {
     var d = dv();
     if (!d) return console.warn('[vfilter] wasm内存未就绪');
@@ -434,19 +568,14 @@
     }
     var dropped = __cands.length - keep.length;
     __cands = keep;
-    console.log('%c[vfilter] ' + __lastVal + ' → ' + newValue + '：淘汰 ' + dropped + '，剩 ' + __cands.length + ' 个',
-                'color:#06c;font-weight:bold');
+    console.log('%c[vfilter] ' + __lastVal + ' → ' + newValue + '：淘汰 ' + dropped + '，剩 ' + __cands.length + ' 个', 'color:#06c;font-weight:bold');
     __lastVal = newValue;
     G.vlist();
     return __cands.length;
   };
 
-  /* 不变过滤：切场景后核对（剔除被回收/复用的地址） */
-  G.vkeep = function () {
-    return G.vfilter(__lastVal);
-  };
+  G.vkeep = function () { return G.vfilter(__lastVal); };
 
-  /* 列表：v6.1 加 return，返回候选数组（控制台直接可见） */
   G.vlist = function () {
     if (!__cands.length) { console.log('[vlist] 无候选'); return []; }
     var d = dv();
@@ -456,16 +585,13 @@
       lines.push('  ' + fmt(c.a) + ' (' + (c.t === 'i' ? 'int' : 'float') + ') = ' + v +
         '  验证: GameGlobal.vwrite(' + fmt(c.a) + ', 10)');
     });
-    var head = '[vlist] ' + __cands.length + ' 个候选（前' + Math.min(30, __cands.length) + '）：';
-    console.log(head + '\n' + lines.join('\n'));
+    console.log('[vlist] ' + __cands.length + ' 个候选（前' + Math.min(30, __cands.length) + '）：\n' + lines.join('\n'));
     if (__cands.length === 1) {
-      console.log('%c★ 只剩1个候选！99%就是它 → GameGlobal.vwrite(' + fmt(__cands[0].a) + ', 10) 验证，界面/速度有变化就 GameGlobal.vwatch(' + fmt(__cands[0].a) + ', 10) 锁定',
-                  'color:#0a0;font-weight:bold');
+      console.log('%c★ 只剩1个候选！99%就是它 → GameGlobal.vwrite(' + fmt(__cands[0].a) + ', 10) 验证，界面/速度有变化就 GameGlobal.vwatch(' + fmt(__cands[0].a) + ', 10) 锁定', 'color:#0a0;font-weight:bold');
     }
     return __cands;
   };
 
-  /* 写值验证 */
   G.vwrite = function (addr, val) {
     var d = dv();
     if (!d) return console.warn('[vwrite] wasm内存未就绪');
@@ -475,12 +601,10 @@
     }
     if (t === 'i') d.setInt32(addr, val, true);
     else d.setFloat32(addr, val, true);
-    console.log('%c[vwrite] ' + fmt(addr) + ' ← ' + val + '（' + (t === 'i' ? 'int' : 'float') +
-      '）看游戏有没有变化！', 'color:#d00;font-weight:bold');
+    console.log('%c[vwrite] ' + fmt(addr) + ' ← ' + val + '（' + (t === 'i' ? 'int' : 'float') + '）看游戏有没有变化！', 'color:#d00;font-weight:bold');
     return true;
   };
 
-  /* 哨兵锁定：持续覆写（0.5秒一次） */
   var __watchTimer = null;
   G.vwatch = function (addr, val) {
     G.vunwatch();
@@ -498,8 +622,7 @@
         else dd.setFloat32(addr, val, true);
       } catch (e) {}
     }, 500);
-    console.log('%c[vwatch] ★ 已锁定 ' + fmt(addr) + ' = ' + val + '（每0.5秒覆写）',
-                'color:#0a0;font-weight:bold');
+    console.log('%c[vwatch] ★ 已锁定 ' + fmt(addr) + ' = ' + val + '（每0.5秒覆写）', 'color:#0a0;font-weight:bold');
     return true;
   };
   G.vunwatch = function () {
@@ -507,33 +630,26 @@
     return true;
   };
 
-  /* 倍速专用向导：vpump(当前倍速数字)
-   * 用法：进关卡确认当前倍速 → GameGlobal.vpump(2)（当前2x就传2）
-   * 然后按提示每点一次倍速按钮敲一次回车 */
   G.vpump = function (cur) {
     var r = G.vscan(cur);
     if (r === undefined || r === 0) return r;
-    console.log('%c[vpump] 倍速连环过滤开始！接下来：',
-      'color:#c60;font-weight:bold',
+    console.log('%c[vpump] 倍速连环过滤开始！接下来：', 'color:#c60;font-weight:bold',
       '\n① 点倍速按钮（2x→3x），然后 GameGlobal.vfilter(3)',
       '\n② 再点（3x→1x），然后 GameGlobal.vfilter(1)',
       '\n③ 再点（1x→2x），然后 GameGlobal.vfilter(2)',
       '\n④ 重复几轮直到候选 < 10 个',
       '\n⑤ GameGlobal.vlist() → 逐个 GameGlobal.vwrite(地址, 10)',
-      '\n   看豆子/传送带速度有没有暴走（按钮文字不一定变，看实际速度！）',
+      '\n   看豆子/传送带速度有没有暴走',
       '\n⑥ 找到后 GameGlobal.vwatch(地址, 10) 永久10倍');
     return r;
   };
 
   G.__vscan = true;
-  console.log('%c[vscan v6.1] 装载完成（注意：控制台里用 GameGlobal. 前缀，不是 G.）',
-    'color:#0a0;font-weight:bold',
+  console.log('%c[vscan v6.1] 装载完成（控制台使用 GameGlobal. 前缀）', 'color:#0a0;font-weight:bold',
     '\n=== 倍速 10x 定位流程 ===',
     '\n1. 进关卡，看当前倍速数字（比如 2x）',
-    '\n2. GameGlobal.vpump(2)   ← 传当前倍速数字',
-    '\n3. 按提示：每点一次倍速按钮，调一次 GameGlobal.vfilter(新数字)',
+    '\n2. GameGlobal.vpump(2)',
+    '\n3. 按提示每点一次倍速按钮调一次 GameGlobal.vfilter(新数字)',
     '\n4. 候选剩个位数后逐个 vwrite(地址,10) 试速度',
-    '\n5. 确认后 GameGlobal.vwatch(地址, 10) 锁定',
-    '\n※ 若 vscan 找不到：倍速可能存的是索引(0/1/2)而不是数字(1/2/3)，改传 GameGlobal.vpump(1)',
-    '\n※ 速度没变化但游戏卡死/报错 → 那个地址是别的字段，vunwatch 换下一个');
+    '\n5. 确认后 GameGlobal.vwatch(地址, 10) 锁定');
 })();
