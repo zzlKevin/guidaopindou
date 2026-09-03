@@ -1059,7 +1059,6 @@
   } catch (e) {
     console.warn('[scan-gesture] 触摸事件绑定失败:', e.message);
   }
-
   G.__scanGesture = true;
   console.log('%c[scan-gesture] 倒计时扫描手势已启用（双指区域分流）', 'color:#0a0;font-weight:bold',
     '\n三指（任意区域）→ rscan(205,210)，开启上方双指扫描权限',
