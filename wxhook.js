@@ -744,7 +744,7 @@
 
   // ----- 一键加时（半自动） -----
   G.addTime = async function (targetSec) {
-    targetSec = targetSec || 9999;
+    targetSec = targetSec || 60000;
     if (!memReady()) return console.warn('内存未就绪');
     console.log('%c[addTime] 开始…这 30 秒请留在本关并让它自然倒数', 'color:#06c;font-weight:bold');
 
@@ -822,9 +822,9 @@
         /* 两轮见证完毕 → 动手 */
         if (na.length <= 8) {
           var dv = new DataView(getMem().buffer);
-          na.forEach(function (a) { dv.setFloat32(a, 9999, true); });
+          na.forEach(function (a) { dv.setFloat32(a, 60000, true); });
           A.lastFire = Date.now();
-          console.log('%c[AP] 🔥 已自动写入 9999 秒 @ ' +
+          console.log('%c[AP] 🔥 已自动写入 60000 秒 @ ' +
             na.map(function (a) { return '0x' + a.toString(16); }).join(', '),
             'color:#d00;font-weight:bold');
         } else {
@@ -840,7 +840,7 @@
     if (G._ap.on) return console.warn('哨兵已在运行');
     G._ap.on = true; G._ap.st = 'idle';
     G._ap.timer = setInterval(_apTick, ivMs || 4000);
-    console.log('%c[AP] 全自动哨兵已开启：%c此后每关倒计时一起步就会被改成9999',
+    console.log('%c[AP] 全自动哨兵已开启：%c此后每关倒计时一起步就会被改成60000',
                 'color:#0a0;font-weight:bold', '');
     console.log('关闭命令: GameGlobal.autopilotStop()');
   };
@@ -879,13 +879,12 @@
 })();
 
 
-/* ============ [模块⑤] 倒计时快速扫描手势 ============ */
+/* ============ [模块⑤] 倒计时快速扫描手势 + 下方区域切换时间作弊 ============ */
 (function () {
   'use strict';
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
   if (G.__scanGesture) { console.log('[scan-gesture] 已加载'); return; }
 
-  // 弹窗工具（兼容微信和浏览器控制台）
   function showToast(msg, dur) {
     dur = dur || 2000;
     try {
@@ -899,73 +898,133 @@
     }
   }
 
-  var lastTri = 0, lastDual = 0;
-  var dualPending = false; // 防止连点
+  // 获取屏幕高度，用于区域判断
+  var screenHeight = 0;
+  try {
+    var sysInfo = wx.getSystemInfoSync();
+    screenHeight = sysInfo.windowHeight || sysInfo.screenHeight || 0;
+  } catch (e) {}
+  if (!screenHeight) {
+    try { if (typeof window !== 'undefined' && window.innerHeight) screenHeight = window.innerHeight; } catch (e) {}
+  }
+  if (!screenHeight) screenHeight = 800;
+  var bottomThreshold = screenHeight * 0.88; // 下方12%区域起始Y坐标
+  console.log('[scan-gesture] 屏幕高度=' + screenHeight + ', 下方12%阈值=' + bottomThreshold);
 
-  // 绑定触摸事件
+  var scanReady = false;      // 三指扫描成功后允许双指（仅上方区域使用）
+  var lastTri = 0, lastDual = 0;
+  var dualPending = false;
+
   try {
     wx.onTouchStart(function (e) {
       if (!e || !e.touches) return;
       var n = e.touches.length;
       var now = Date.now();
 
-      // ===== 三指：扫描 =====
+      // ----- 三指：扫描（全局有效，无区域限制） -----
       if (n === 3) {
-        if (now - lastTri < 1000) return;          // 防抖
+        if (now - lastTri < 1500) return;
         lastTri = now;
         if (typeof G.rscan === 'function') {
-          var cnt = G.rscan(206, 214);             // 范围覆盖 3:30 附近
+          var cnt = G.rscan(205, 210);
           showToast('扫描候选: ' + cnt + ' 个', 2000);
           console.log('[scan-gesture] 三指扫描完成，候选数:', cnt);
+          if (cnt > 0) {
+            scanReady = true;
+            setTimeout(function () { scanReady = false; }, 30000); // 30秒内有效
+          } else {
+            scanReady = false;
+          }
         } else {
-          showToast('rscan 未定义，请确保模块④已加载', 2000);
+          showToast('rscan 未定义', 2000);
         }
         return;
       }
 
-      // ===== 双指：快照 + 延迟过滤 =====
+      // ----- 双指：根据区域分流 -----
       if (n === 2) {
-        if (now - lastDual < 2000) return;         // 防抖
-        lastDual = now;
-        if (dualPending) return;
-        dualPending = true;
-
-        if (typeof G.snap === 'function' && typeof G.rdiff === 'function') {
-          G.snap();
-          showToast('已拍快照，等待1秒后过滤...', 1500);
-          console.log('[scan-gesture] 双指触发 snap，1秒后 rdiff');
-
-          setTimeout(function () {
-            try {
-              var remaining = G.rdiff(6, 2);       // 预期下降6秒，误差±2秒
-              console.log('[scan-gesture] rdiff 结果，候选剩余:', remaining);
-
-              if (remaining === 0) {
-                showToast('过滤后无候选，请重试（可能时间误差大）', 2500);
-              } else if (remaining === 1) {
-                // 唯一候选 → 自动锁定 9999 秒
-                if (typeof G.set === 'function') {
-                  G.set(9999);
-                  var addr = (G.__cand && G.__cand[0]) ? '0x' + G.__cand[0].a.toString(16) : '未知';
-                  var msg = '✅ 已锁定 ' + addr + ' = 9999秒';
-                  showToast(msg, 4000);
-                  console.log('%c[scan-gesture] ' + msg, 'color:#d00;font-weight:bold');
-                } else {
-                  showToast('set 未定义', 1500);
-                }
-              } else {
-                showToast('候选 ' + remaining + ' 个，请再次双指过滤', 2500);
-              }
-            } catch (err) {
-              showToast('过滤出错: ' + err.message, 2000);
-              console.error('[scan-gesture] 错误:', err);
-            }
-            dualPending = false;
-          }, 1000);   // 延迟1秒，让游戏继续走一小段时间
-        } else {
-          showToast('snap/rdiff 未定义，请确保模块④已加载', 2000);
-          dualPending = false;
+        var touches = e.touches;
+        var allAbove = true, allBelow = true;
+        for (var i = 0; i < touches.length; i++) {
+          var y = touches[i].clientY;
+          if (y >= bottomThreshold) allAbove = false;
+          if (y < bottomThreshold) allBelow = false;
         }
+
+        // 情况1：都在下方12%区域 → 切换时间作弊（原功能）
+        if (allBelow) {
+          if (typeof G.toggleTimeCheat === 'function') {
+            G.toggleTimeCheat();
+          } else {
+            showToast('toggleTimeCheat 未定义', 1500);
+          }
+          return;
+        }
+
+        // 情况2：都在上方88%区域 → 倒计时扫描过滤
+        if (allAbove) {
+          if (now - lastDual < 2000) return;
+          lastDual = now;
+          if (dualPending) return;
+          dualPending = true;
+
+          if (!scanReady) {
+            showToast('请先三指扫描', 1500);
+            dualPending = false;
+            return;
+          }
+
+          if (typeof G.snap === 'function' && typeof G.rdiff === 'function') {
+            // 检查候选是否存在
+            if (!G.__cand || G.__cand.length === 0) {
+              showToast('候选为空，请重新三指扫描', 2000);
+              scanReady = false;
+              dualPending = false;
+              return;
+            }
+            G.snap();
+            showToast('已拍快照，等待1秒后过滤...', 1500);
+            console.log('[scan-gesture] 双指（上方）触发 snap，1秒后 rdiff');
+
+            setTimeout(function () {
+              try {
+                var remaining = G.rdiff(6, 5);
+                console.log('[scan-gesture] rdiff 结果，候选剩余:', remaining);
+
+                if (remaining === 0) {
+                  showToast('过滤后无候选，请重试', 2500);
+                  scanReady = false;
+                } else if (remaining === 1) {
+                  if (typeof G.set === 'function') {
+                    G.set(60000);
+                    var addr = (G.__cand && G.__cand[0]) ? '0x' + G.__cand[0].a.toString(16) : '未知';
+                    var msg = '✅ 已锁定 ' + addr + ' = 60000秒';
+                    showToast(msg, 4000);
+                    console.log('%c[scan-gesture] ' + msg, 'color:#d00;font-weight:bold');
+                    scanReady = false;
+                  } else {
+                    showToast('set 未定义', 1500);
+                  }
+                } else {
+                  showToast('候选 ' + remaining + ' 个，请再次双指', 2500);
+                  // scanReady 保持 true，允许继续过滤
+                }
+              } catch (err) {
+                showToast('过滤出错', 2000);
+                console.error('[scan-gesture] 错误:', err);
+                scanReady = false;
+              }
+              dualPending = false;
+            }, 1000);
+          } else {
+            showToast('snap/rdiff 未定义', 2000);
+            dualPending = false;
+          }
+          return;
+        }
+
+        // 情况3：跨区域（一个在上一个在下）→ 忽略
+        // 什么都不做
       }
     });
   } catch (e) {
@@ -973,7 +1032,8 @@
   }
 
   G.__scanGesture = true;
-  console.log('%c[scan-gesture] 倒计时快速扫描手势已启用', 'color:#0a0;font-weight:bold',
-    '\n三指 → rscan(206,214)（显示候选数）',
-    '\n双指 → snap，1秒后 rdiff(6,2)，若唯一则自动锁定9999并显示地址');
+  console.log('%c[scan-gesture] 倒计时扫描手势已启用（双指区域分流）', 'color:#0a0;font-weight:bold',
+    '\n三指（任意区域）→ rscan(205,210)，开启上方双指扫描权限',
+    '\n双指（上方88%）→ 倒计时过滤+锁定',
+    '\n双指（下方12%）→ 切换时间作弊（toggleTimeCheat）');
 })();
