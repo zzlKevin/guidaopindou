@@ -696,6 +696,20 @@
     console.log('[snap] 已记录', G.__cand.length, '个基准值');
   };
 
+  // G.rdiff = function (dropSec, eps) {
+  //   if (!G.__cand || !G.__cand.length) return 0;
+  //   var dv = new DataView(getMem().buffer);
+  //   if (dropSec == null) dropSec = (Date.now() - (G.__snapT || Date.now())) / 1000;
+  //   if (eps == null) eps = Math.max(1, dropSec * 0.45);
+  //   G.__cand = G.__cand.filter(function (c) {
+  //     var now = _read(c, dv);
+  //     return now >= 0 && now < 36000 &&
+  //            Math.abs((c.last - now) - dropSec) < eps;
+  //   });
+  //   console.log('[rdiff] 预期↓' + dropSec.toFixed(1) + 's 剩:', G.__cand.length);
+  //   if (G.__cand.length <= 10) G.list();
+  //   return G.__cand.length;
+  // };
   G.rdiff = function (dropSec, eps) {
     if (!G.__cand || !G.__cand.length) return 0;
     var dv = new DataView(getMem().buffer);
@@ -707,20 +721,35 @@
              Math.abs((c.last - now) - dropSec) < eps;
     });
     console.log('[rdiff] 预期↓' + dropSec.toFixed(1) + 's 剩:', G.__cand.length);
-    if (G.__cand.length <= 10) G.list();
+    if (G.__cand.length <= 10) {
+      try {
+        G.list();   // 如果 list 内部出错（比如 console.table 不可用），不会中断 rdiff
+      } catch (e) {
+        console.warn('[rdiff] 列表输出失败，但过滤结果有效', e);
+      }
+    }
     return G.__cand.length;
   };
-
+  // G.list = function () {
+  //   if (!G.__cand || !G.__cand.length) return console.warn('无候选');
+  //   var dv = new DataView(getMem().buffer);
+  //   console.table(G.__cand.map(function (c) {
+  //     return { addr: '0x' + c.a.toString(16), type: c.t,
+  //              cur: (+_read(c, dv)).toFixed(2),
+  //              last: c.last == null ? '-' : (+c.last).toFixed(2) };
+  //   }));
+  // };
   G.list = function () {
     if (!G.__cand || !G.__cand.length) return console.warn('无候选');
     var dv = new DataView(getMem().buffer);
-    console.table(G.__cand.map(function (c) {
-      return { addr: '0x' + c.a.toString(16), type: c.t,
-               cur: (+_read(c, dv)).toFixed(2),
-               last: c.last == null ? '-' : (+c.last).toFixed(2) };
-    }));
+    var lines = [];
+    G.__cand.forEach(function (c) {
+      var cur = +_read(c, dv);
+      var last = c.last == null ? '-' : (+c.last).toFixed(2);
+      lines.push('  ' + '0x' + c.a.toString(16) + ' (' + c.t + ') cur=' + cur.toFixed(2) + ' last=' + last);
+    });
+    console.log('[list] 候选列表（共 ' + G.__cand.length + ' 个）:\n' + lines.join('\n'));
   };
-
   // ----- 写入 -----
   G.poke = function (addr, sec) {
     var a = typeof addr === 'string' ? parseInt(addr, 16) : addr;
