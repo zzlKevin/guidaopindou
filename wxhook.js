@@ -14,6 +14,111 @@
  *  手势：上方88%双指 → 速度过滤，下方12%双指 → 时间作弊开关
  *  真机想看日志：控制台执行 GameGlobal.perfRestoreConsole()
  * ============================================================= */
+
+/* ============ [模块⓪] 性能守卫 —— iOS 发热/越玩越卡修复 ============ */
+/* 2026-09-04 病因分析（安卓正常/苹果越玩越卡越烫）：
+ *  ① 真机上每条 console.log 都进微信 LogManager（内存缓冲+字符串拼接），
+ *     游戏的 [PLUGIN MONITOR] 每秒打 5 条带堆栈的日志 + 本 hook 各模块日志
+ *     → iOS JSC 上持续 GC 压力+发热，玩得越久缓冲越大越卡
+ *  ② 速度哨兵(300ms)在关卡切换地址漂移后，把 5.0 持续写进已回收的堆槽
+ *     → 若被 Unity 复用成活字段（时间缩放/物理参数），等于持续破坏游戏内存
+ *  ③ 倒计时哨兵(800ms)在锚点失效后高频"检测到正常倒计时"写值+日志轰炸
+ *  修复：真机 console 全静默 / Toast 防抖 / 两哨兵失效自动降级停写 */
+var __wxPerf = (function () {
+  'use strict';
+  var G = (typeof GameGlobal !== 'undefined') ? GameGlobal : {};
+  if (G.__perfGuard) return G.__perfGuard;
+
+  var isDevtools = false;
+  try {
+    var pi = (wx.getSystemInfoSync() || {}).platform;
+    isDevtools = (pi === 'devtools');
+  } catch (e) {}
+
+  /* Toast 防抖：同名文案最小间隔（防哨兵 300ms 连环弹原生 UI） */
+  var __lastToast = {};
+  function throttledToast(msg, dur) {
+    var now = Date.now();
+    if (__lastToast[msg] && now - __lastToast[msg] < 1500) return;
+    __lastToast[msg] = now;
+    try {
+      wx.showToast({ title: msg, icon: 'none', duration: dur || 2000, mask: false });
+    } catch (e) {}
+  }
+
+  /* 真机 console 全静默：不进 LogManager = 零内存/GC 开销 */
+  var silenced = false;
+  var orig = {
+    log: console.log, info: console.info, warn: console.warn,
+    debug: console.debug, error: console.error
+  };
+  function silence() {
+    if (silenced) return;
+    silenced = true;
+    ['log', 'info', 'warn', 'debug', 'error'].forEach(function (k) {
+      try { console[k] = function () {}; } catch (e) {}
+    });
+  }
+
+  /* 噪音过滤：微信插件/基础库的刷屏日志（devtools 也生效）
+   * PLUGIN MONITOR / PLUGIN LOG 来自官方 UnityPlugin（plugin.js），无公开开关
+   * wxapplib 来自微信小游戏基础库 —— 只能在 console 层拦 */
+  var NOISE_RE = /\[PLUGIN MONITOR|\[PLUGIN LOG|wxapplib|预下载监控/i;
+  var noiseFilterOn = true;
+  function installNoiseFilter() {
+    ['log', 'info', 'warn', 'debug'].forEach(function (k) {
+      try {
+        console[k] = function () {
+          if (!noiseFilterOn) { orig[k].apply(console, arguments); return; }
+          for (var i = 0; i < arguments.length; i++) {
+            var a = arguments[i];
+            if (typeof a === 'string' && NOISE_RE.test(a)) return;   // 丢弃
+          }
+          orig[k].apply(console, arguments);
+        };
+      } catch (e) {}
+    });
+  }
+  function uninstallNoiseFilter() {
+    ['log', 'info', 'warn', 'debug'].forEach(function (k) {
+      try { console[k] = orig[k]; } catch (e) {}
+    });
+  }
+  /* 切换噪音过滤（诊断时想看插件日志就执行一次） */
+  G.perfToggleNoise = function () {
+    noiseFilterOn = !noiseFilterOn;
+    if (!noiseFilterOn) uninstallNoiseFilter(); else installNoiseFilter();
+    try { (orig.log || console.log)('[perf] 噪音过滤已' + (noiseFilterOn ? '开启' : '关闭')); } catch (e) {}
+    return noiseFilterOn;
+  };
+
+  if (!isDevtools) silence();
+  else installNoiseFilter();   /* 开发者工具：过滤刷屏但保留游戏/自家日志 */
+
+  G.perfRestoreConsole = function () {
+    if (silenced) {
+      silenced = false;
+      uninstallNoiseFilter();
+      ['log', 'info', 'warn', 'debug', 'error'].forEach(function (k) {
+        try { console[k] = orig[k]; } catch (e) {}
+      });
+      (orig.log || function () {})('[perf] console 已恢复（真机调试模式，注意发热）');
+    } else {
+      uninstallNoiseFilter();
+      noiseFilterOn = false;
+      (orig.log || function () {})('[perf] 噪音过滤已关闭（诊断模式）');
+    }
+  };
+
+  var api = {
+    isDevtools: isDevtools,
+    silenced: function () { return silenced; },
+    toast: throttledToast
+  };
+  G.__perfGuard = api;
+  return api;
+})();
+
 /* ============ [模块①] 倒计时锚点哨兵 v10 —— 自适应地址版 ============ */
 (function () {
   'use strict';
@@ -390,7 +495,6 @@
       globalObj.toast(msg, dur);
     } else if (typeof __wxPerf !== 'undefined' && __wxPerf.toast) {
       __wxPerf.toast(msg, dur);   // v11.2 防抖：防哨兵连环弹原生 UI
-    }
     } else {
       try {
         if (typeof wx !== 'undefined' && wx.showToast) {
