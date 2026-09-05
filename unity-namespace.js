@@ -37,9 +37,9 @@ var e = {
 };
 e.monitorConfig = {
     showSuggestModal: !1,
-    enableMonitor: !0,
+    enableMonitor: !1,
     fps: 10,
-    showResultAfterLaunch: !0,
+    showResultAfterLaunch: !1,
     monitorDuration: 3e4
   }, e.isCacheableFile = function(e) {
     var a = [".json", ".xml", ".db", ".version"];
