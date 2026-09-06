@@ -9,9 +9,12 @@
  *         轮询内存值动态触发提示和重置，并在关闭分支增加5分钟阈值修正
  *  模块② 广告 Hook v1
  *  模块③ 速度模块 v11.1 + 失效降级（哨兵检测地址漂移自动解除）
+ *  模块⑥ GM直调桥 v2（wasm函数表直调C#静态方法：一键通关/跳关/加时
+ *         + 全关卡解锁：存档 unlockedLevels 等字段读写增强（wx层+WXWASMSDK桥层））
  *  附加  内存扫描套件 v6.1
  * -------------------------------------------------------------
- *  手势：上方88%双指 → 速度过滤，下方12%双指 → 时间作弊开关
+ *  手势：上方12%双指 → 一键通关(GM)，中部76%双指 → 速度过滤，
+ *        下方12%双指 → 时间作弊开关，三指 → 速度扫描/解除
  *  真机想看日志：控制台执行 GameGlobal.perfRestoreConsole()
  * ============================================================= */
 
@@ -482,7 +485,7 @@ var __wxPerf = (function () {
   console.log('[AD-Hook] wx.createRewardedVideoAd 已拦截');
 })();
 
-/* ============ [模块③] 速度模块 v11.1（上方88%区域双指过滤） ============ */
+/* ============ [模块③] 速度模块 v11.1（中部76%区域双指过滤） ============ */
 (function () {
   'use strict';
   var globalObj = (typeof GameGlobal !== 'undefined') ? GameGlobal :
@@ -517,7 +520,9 @@ var __wxPerf = (function () {
     try { if (typeof window !== 'undefined' && window.innerHeight) screenHeight = window.innerHeight; } catch (e) {}
   }
   if (!screenHeight) screenHeight = 800;
-  console.log('[speed] 屏幕高度 = ' + screenHeight + '，下方12%阈值 = ' + (screenHeight * 0.88));
+  var topZone = screenHeight * 0.12;    // 上方12%：一键通关
+  var bottomThreshold = screenHeight * 0.88; // 下方12%起始Y：时间作弊
+  console.log('[speed] 屏幕高度 = ' + screenHeight + '，上方12%阈值 = ' + topZone + '，下方12%阈值 = ' + bottomThreshold);
 
   var SPEED_TARGET = 5;
   var state = 'IDLE';
@@ -683,7 +688,8 @@ var __wxPerf = (function () {
   }, 300);
 
   // 手势路由（区域划分）
-  var __lastTri = 0, __lastQuad = 0;
+  // 上方12%双指 → 一键通关(GM)；中部76%双指 → 速度过滤；下方12%双指 → 时间作弊
+  var __lastTri = 0, __lastQuad = 0, __lastWin = 0;
   try {
     wx.onTouchStart(function (e) {
       if (!e || !e.touches) return;
@@ -694,12 +700,22 @@ var __wxPerf = (function () {
         triFinger();
       } else if (n === 2) {
         var touches = e.touches;
-        var bottomThreshold = screenHeight * 0.88;
-        var allBottom = true, allTop = true;
+        var allTop = true, allBottom = true;
         for (var i = 0; i < touches.length; i++) {
           var y = touches[i].clientY;
+          if (y >= topZone) allTop = false;
           if (y < bottomThreshold) allBottom = false;
-          if (y >= bottomThreshold) allTop = false;
+        }
+        if (allTop) {
+          // 上方12%区域 → 一键通关（GM直调）
+          if (now - __lastWin < 1500) return;
+          __lastWin = now;
+          if (globalObj.finishByGM) {
+            globalObj.finishByGM();
+          } else {
+            showToast('GM模块未加载', 1500);
+          }
+          return;
         }
         if (allBottom) {
           // 下方12%区域 → 切换时间作弊
@@ -707,12 +723,11 @@ var __wxPerf = (function () {
             globalObj.toggleTimeCheat();
           }
           return;
-        } else if (allTop) {
-          // 上方88%区域 → 速度过滤
-          if (now - __lastQuad < 800) return;
-          __lastQuad = now;
-          quadFinger();
         }
+        // 中部76%区域 → 速度过滤
+        if (now - __lastQuad < 800) return;
+        __lastQuad = now;
+        quadFinger();
       }
     });
   } catch (e) {}
@@ -749,7 +764,7 @@ var __wxPerf = (function () {
   console.log('%c[wxhook v11.1] 速度模块已装载', 'color:#0a0;font-weight:bold',
     '\n流程：三指扫描 → 双指按序过滤（3→1→设置→2→1循环）',
     '\n候选≤3自动锁定5倍，三指解除',
-    '\n双指操作区域：上方88%（速度过滤），下方12%（时间作弊开关）');
+    '\n双指区域：上方12%（一键通关） 中部76%（速度过滤） 下方12%（时间开关）');
   showToast('速度模块 v11.1 已启动', 2000);
 })();
 
@@ -1300,36 +1315,59 @@ var __wxPerf = (function () {
 //     '\n双指（上方88%）→ 倒计时过滤+锁定',
 //     '\n双指（下方12%）→ 切换时间作弊（toggleTimeCheat）');
 // })();
-/* ============ [模块⑥] GM一键通关 + 关卡解锁工具 v1 ============ */
-/* 线索（2026-09-05 metadata 验证）：
- *   PdpxRootMgr.OnFinishByGM —— 官方GM过关入口（事件handler，紧邻OnFinishCurJigsaw/ForceFail）
- *   PBGameModelData.HighestUnlockedLevelId / PlayerData.unlockedLevels/clearedLevels —— 关卡解锁字段
- *   wasm 间接函数表导出 Module.asm.Yq（表索引65143 → funcidx 11868）
- * 存档：本地storage明文JSON（pdpx_vyXxxModel模式），网络层才加密
+
+/* ============ [模块⑥] GM直调桥 v2 —— 一键通关/跳关/加时 + 全关卡解锁 ============ */
+/* 原理（2026-09-06 槽位修正版）：
+ *  ① global-metadata.dat 解析：PdpxRootMgr 是全静态 GM 门面类，
+ *     OnFinishByGM(官方一键通关) / OnFinishCurJigsaw / ForceFail / OnFinishCheck /
+ *     set_LevelId+AnalyzeLevel(跳关) / OnAddTime(加时) 全部为静态方法
+ *  ② wasm 数据段 Il2CppCodeGenModule("Assembly-CSharp.dll", 57416 方法)
+ *     → methodPointers 数组基址 VA 0x47aa20 → 槽位 = 数组[rid-1]
+ *  ③ 运行时 Module.asm.Yq（WebAssembly.Table）.get(slot) 直调 C# 静态方法
+ * ★ v1 事故复盘：旧版把数组基址误取 0x47ab1c（整整偏后 63 项），
+ *     65143 实际是 OnExecuteMagent(磁铁特效 getter，无害) → 现象"调用成功但没反应"。
+ *     修正依据：数组基址由 count=57416 的结构体字段直接给出，
+ *     且 OnFinishByGM/CurJigsaw/ForceFail/OnFinishCheck 四槽位连续(65083~65086)与源码顺序一致。
  *
- * 手势：双指点击 屏幕上方12%区域 → 触发一键通关尝试
- * 控制台：GameGlobal.dumpStorage() 列存档 | GameGlobal.gmFinish() 手动触发
- *         GameGlobal.tblInfo(n) 查表函数 | GameGlobal.tblCall(n, ...args) 调任意表函数 */
+ * 控制台：GameGlobal.gm.diag() 自检 ｜ GameGlobal.gm.finish() 一键通关
+ *         GameGlobal.gm.jump(关卡号) 跳关 ｜ GameGlobal.gm.addTime(秒) 加时
+ *         GameGlobal.unlockSave() 立即解锁存档关卡 ｜ GameGlobal.tblCall(n,...) 任意表函数
+ * 手势：上方12%双指 = 一键通关（模块③路由 → 这里的 finishByGM） */
 (function () {
   'use strict';
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
   if (G.__gmModule) { return; }
   G.__gmModule = true;
 
+  /* wasm 函数表槽位（离线解析自 wasm md5 451868dc5d53b768；游戏更新后需重新计算）
+   * np = wasm 参数个数（IL2CPP 静态方法 = 声明参数 + 1 个隐藏 methodInfo） */
+  var CALLS = {
+    OnFinishByGM:      { slot: 65083, np: 1 },  /* 官方GM一键通关，0参 */
+    OnFinishCurJigsaw: { slot: 65084, np: 1 },  /* 完成当前拼图 */
+    ForceFail:         { slot: 65085, np: 1 },  /* 强制失败（管道自检用） */
+    OnFinishCheck:     { slot: 65086, np: 2 },  /* (param) 完成校验 */
+    get_LevelId:       { slot: 64969, np: 1 },  /* 读当前关卡id */
+    set_LevelId:       { slot: 64970, np: 2 },  /* (int) 写关卡id */
+    AnalyzeLevel:      { slot: 64957, np: 1 },  /* 重新解析当前关 */
+    get_TestType:      { slot: 65149, np: 1 },
+    set_TestType:      { slot: 65150, np: 2 },  /* (int) 测试模式 */
+    OnAddTime:         { slot: 65170, np: 2 },  /* (int 秒) 官方加时 */
+    OnGetLeftTime:     { slot: 65171, np: 1 },  /* 读剩余时间 */
+    OnSaveCache:       { slot: 65030, np: 1 },
+    OnGetProgress:     { slot: 65178, np: 1 }
+  };
+
   function gmToast(msg, dur) {
     if (typeof __wxPerf !== 'undefined' && __wxPerf.toast) { __wxPerf.toast(msg, dur || 2000); return; }
     try { wx.showToast({ title: msg, icon: 'none', duration: dur || 2000 }); } catch (e) {}
   }
-  function glog() {
-    try { console.log.apply(console, arguments); } catch (e) {}
-  }
+  function glog() { try { console.log.apply(console, arguments); } catch (e) {} }
 
   /* ---------- wasm 函数表访问 ---------- */
   function getTable() {
     try {
       var M = G.Module || (typeof window !== 'undefined' && window.Module);
       if (M && M.asm && M.asm.Yq && typeof M.asm.Yq.get === 'function') return M.asm.Yq;
-      /* 兜底：遍历 asm 找 WebAssembly.Table */
       if (M && M.asm) {
         for (var k in M.asm) {
           if (M.asm[k] && typeof M.asm[k].get === 'function' && typeof M.asm[k].length === 'number') {
@@ -1341,114 +1379,276 @@ var __wxPerf = (function () {
     return null;
   }
 
-  /* 表函数信息（参数个数 = wasm 函数 length） */
+  /* 统一直调：{ok:true,v:返回值} / {ok:false,err}（wasm trap 被捕获，不崩主循环） */
+  function invoke(name) {
+    var c = CALLS[name];
+    var t = getTable();
+    if (!c) return { ok: false, err: 'no-such-call' };
+    if (!t || t.length <= c.slot) return { ok: false, err: 'table-not-ready' };
+    var fn = null;
+    try { fn = t.get(c.slot); } catch (e) { return { ok: false, err: 'slot-oob' }; }
+    if (typeof fn !== 'function') return { ok: false, err: 'empty-slot(分包未加载完?)' };
+    var args = Array.prototype.slice.call(arguments, 1);
+    while (args.length < c.np) args.push(0);   /* 补齐参数与隐藏 methodInfo */
+    try { return { ok: true, v: fn.apply(null, args) }; }
+    catch (e) { return { ok: false, err: ('' + (e && e.message || e)).slice(0, 80) }; }
+  }
+
+  /* 任意表函数调试工具（保留 v1 接口） */
   G.tblInfo = function (n) {
     var t = getTable();
-    if (!t) { glog('[gm] wasm函数表未就绪（Module.asm.Yq 不存在）'); return null; }
+    if (!t) { glog('[gm] wasm函数表未就绪'); return null; }
     try {
       var f = t.get(n);
-      glog('%c[gm] Table[' + n + '] → 函数参数个数=' + (f && f.length) + '（IL2CPP实例方法≈ this+methodInfo）', 'color:#c60;font-weight:bold');
+      glog('%c[gm] Table[' + n + '] 参数个数=' + (f && f.length) + '（静态0参=1 / 静态1参=2 / 实例0参=2）', 'color:#c60;font-weight:bold');
       return f;
     } catch (e) { glog('[gm] Table[' + n + '] 越界或无效'); return null; }
   };
-
-  /* 调用任意表函数（args 为数字参数；wasm trap 会被 catch，不崩游戏主循环） */
   G.tblCall = function (n) {
-    var f = G.tblInfo(n);
-    if (!f) return null;
+    var t = getTable();
+    if (!t) { glog('[gm] wasm函数表未就绪'); return null; }
+    var f = null;
+    try { f = t.get(n); } catch (e) {}
+    if (typeof f !== 'function') { glog('[gm] Table[' + n + '] 为空'); return null; }
     var args = Array.prototype.slice.call(arguments, 1);
     try {
-      var r = f.apply(null, args.length ? args : [0, 0]);
-      glog('%c[gm] Table[' + n + '] 调用成功，返回:', 'color:#0a0;font-weight:bold', r);
+      var r = f.apply(null, args);
+      glog('%c[gm] Table[' + n + '](' + args.join(',') + ') →', 'color:#0a0;font-weight:bold', r);
       return r;
     } catch (e) {
-      glog('[gm] Table[' + n + '] 调用trap（参数/this不对属正常，换参数再试）:', (e && e.message || e).toString().slice(0, 120));
+      glog('[gm] Table[' + n + '] trap:', ('' + (e && e.message || e)).slice(0, 120));
       return null;
     }
   };
 
-  /* ---------- 一键通关：调 OnFinishByGM（表索引65143） ----------
-   * 调用约定尝试顺序：
-   *   ① f(0, 0)      this=0（若handler不用实例字段，可能直接过）
-   *   ② 失败再试 f(0)（无methodInfo变体）
-   *   ③ 需要真实实例的话后续做实例扫描（gmScanInstance） */
-  var GM_FINISH_TABLE = 65143;
-  G.gmFinish = function () {
+  /* ---------- 一键通关（模块③手势调用入口） ---------- */
+  G.finishByGM = function () {
     var t = getTable();
-    if (!t) { gmToast('wasm表未就绪'); return false; }
-    glog('%c[gm] 一键通关：调 Table[' + GM_FINISH_TABLE + ']（OnFinishByGM）', 'color:#d00;font-weight:bold');
-    var r1 = G.tblCall(GM_FINISH_TABLE, 0, 0);
-    if (r1 !== null && r1 !== undefined) { gmToast('GM调用成功'); return true; }
-    var r2 = G.tblCall(GM_FINISH_TABLE, 0);
-    gmToast(r2 !== null ? 'GM调用成功' : 'GM调用trap(可能需实例)');
-    return r2 !== null;
+    if (!t) { gmToast('wasm函数表未就绪', 1500); return false; }
+    var lv0 = invoke('get_LevelId');
+    var r = invoke('OnFinishByGM');
+    if (!r.ok) {
+      gmToast('GM通关调用失败(' + r.err + ')', 2200);
+      glog('%c[gm] OnFinishByGM 失败:', 'color:#d00;font-weight:bold', r.err);
+      return false;
+    }
+    var lv1 = invoke('get_LevelId');
+    glog('%c[gm] ★ OnFinishByGM 已调用（关卡id ' + (lv0.ok ? lv0.v : '?') + ' → ' + (lv1.ok ? lv1.v : '?') + '）', 'color:#d00;font-weight:bold');
+    gmToast('GM通关已触发', 1500);
+    return true;
   };
+  G.gmFinish = G.finishByGM;   /* v1 别名 */
 
-  /* ---------- 存档侦察：列出全部 storage key ----------
-   * 目的：找 PlayerData/PBGameModelData 的存档 key（pdpx_vyXxxModel 模式）
-   * 返回 {key: 前500字符}，关卡解锁字段就在里面 */
+  /* ---------- 自检诊断：验证槽位/调用约定/实时值 ---------- */
+  function diag() {
+    var lines = [];
+    var t = getTable();
+    lines.push('[gm.diag] 函数表: ' + (t ? 'ok（' + t.length + ' 项）' : '未找到！（Module.asm.Yq 不存在，等游戏加载完再试）'));
+    if (t) {
+      for (var name in CALLS) {
+        var c = CALLS[name], fn = null;
+        try { fn = t.get(c.slot); } catch (e) {}
+        if (!fn) lines.push('  ' + name + ' @' + c.slot + ' = 空(分包未加载完?)');
+        else lines.push('  ' + name + ' @' + c.slot + ' 参数个数=' + fn.length + (fn.length === c.np ? ' ✓' : '（预期' + c.np + '）⚠'));
+      }
+      var lv = invoke('get_LevelId');
+      lines.push('get_LevelId() = ' + (lv.ok ? lv.v : '✗ ' + lv.err));
+      var lt = invoke('OnGetLeftTime');
+      lines.push('OnGetLeftTime() = ' + (lt.ok ? lt.v : '✗ ' + lt.err));
+      var tt = invoke('get_TestType');
+      lines.push('get_TestType() = ' + (tt.ok ? tt.v : '✗ ' + tt.err));
+      lines.push('（get_LevelId 返回合理关卡号 / OnGetLeftTime 返回剩余秒数 = 管道正确）');
+    }
+    lines.push('存档解锁增强: ' + (CFG.on ? '开（levelMax=' + CFG.levelMax + ' chapterMax=' + CFG.chapterMax + '）' : '关'));
+    var txt = lines.join('\n');
+    glog('%c' + txt, 'color:#0a0;font-weight:bold');
+    return txt;
+  }
+
+  /* ---------- gm 控制台 API ---------- */
+  var gm = {
+    diag: diag,
+    finish: function () { return G.finishByGM(); },
+    jigsaw: function () { var r = invoke('OnFinishCurJigsaw'); gmToast(r.ok ? 'OnFinishCurJigsaw 已触发' : '失败(' + r.err + ')', 1800); return r.ok; },
+    check: function () { var r = invoke('OnFinishCheck', 1); gmToast(r.ok ? 'OnFinishCheck(1) 已触发' : '失败(' + r.err + ')', 1800); return r.ok; },
+    fail: function () { var r = invoke('ForceFail'); gmToast(r.ok ? 'ForceFail 已触发（关卡应立即失败=管道正常）' : '失败(' + r.err + ')', 2200); return r.ok; },
+    level: function () { var r = invoke('get_LevelId'); return r.ok ? r.v : null; },
+    jump: function (n) {
+      n = Math.floor(+n || 0);
+      if (n <= 0) { gmToast('用法 GameGlobal.gm.jump(关卡号)', 2000); return false; }
+      var a = invoke('set_LevelId', n);
+      if (!a.ok) { gmToast('set_LevelId 失败(' + a.err + ')', 1800); return false; }
+      setTimeout(function () {
+        var b = invoke('AnalyzeLevel');
+        gmToast(b.ok ? ('跳关执行：第' + n + '关') : 'AnalyzeLevel 失败(' + b.err + ')', 2000);
+      }, 120);
+      return true;
+    },
+    addTime: function (sec) { var r = invoke('OnAddTime', Math.floor(sec || 120)); gmToast(r.ok ? '已加时 ' + (sec || 120) + ' 秒(官方通道)' : '失败(' + r.err + ')', 1800); return r.ok; },
+    leftTime: function () { var r = invoke('OnGetLeftTime'); return r.ok ? r.v : null; },
+    test: function (n) { var r = invoke('set_TestType', Math.floor(n || 0)); gmToast(r.ok ? ('TestType → ' + (n || 0)) : '失败(' + r.err + ')', 1500); return r.ok; },
+    unlock: function () { return unlockSave(); },
+    unlockOff: function () { CFG.on = false; gmToast('存档解锁增强已关（重启游戏生效）', 2000); },
+    cfg: null   /* 底部赋值 */
+  };
+  G.gm = gm;
+
+  /* ---------- 存档侦察（保留 v1 接口） ---------- */
   G.dumpStorage = function () {
     try {
       var info = wx.getStorageInfoSync();
       var keys = (info && info.keys) || [];
-      glog('%c[gm] storage 共 ' + keys.length + ' 个key（总' + ((info.currentSize || 0) / 1024).toFixed(0) + 'KB）', 'color:#06c;font-weight:bold');
+      glog('%c[gm] storage 共 ' + keys.length + ' 个key', 'color:#06c;font-weight:bold');
       var out = {};
       keys.forEach(function (k) {
-        var sz = 0, preview = '';
-        try {
-          var v = wx.getStorageSync(k);
-          var s = typeof v === 'string' ? v : JSON.stringify(v);
-          sz = (s && s.length) || 0;
-          preview = (s || '').slice(0, 500);
-        } catch (e) { preview = '<读取失败>'; }
-        glog('[gm] ' + k + ' (' + sz + 'B)');
-        if (/pdpx|Model|Data|Save|Level|Player/i.test(k)) {
-          out[k] = preview;
-          glog('%c    内容: ' + preview, 'color:#08f');
-        }
+        var s = '';
+        try { var v = wx.getStorageSync(k); s = typeof v === 'string' ? v : JSON.stringify(v); } catch (e) { s = '<读取失败>'; }
+        glog('[gm] ' + k + ' (' + (s || '').length + 'B)');
+        if (/pdpx|Model|Data|Save|Level|Player/i.test(k)) { out[k] = (s || '').slice(0, 500); glog('%c    内容: ' + out[k], 'color:#08f'); }
       });
-      glog('%c[gm] 找存档key后：GameGlobal.dumpSave("key名") 看完整内容', 'color:#06c');
       return out;
-    } catch (e) { glog('[gm] dumpStorage 异常:', e && e.message); return null; }
+    } catch (e) { return null; }
   };
-
-  /* 完整读某个存档key */
   G.dumpSave = function (k) {
     try {
       var v = wx.getStorageSync(k);
       var s = typeof v === 'string' ? v : JSON.stringify(v);
-      glog('%c[gm] 存档 ' + k + ' (' + (s || '').length + 'B)：', 'color:#08f;font-weight:bold');
-      glog(s);
+      glog('%c[gm] 存档 ' + k + ' (' + (s || '').length + 'B)：\n' + s, 'color:#08f;font-weight:bold');
       return s;
-    } catch (e) { glog('[gm] 读取失败:', e && e.message); return null; }
+    } catch (e) { return null; }
   };
 
-  /* ---------- 手势：双指点击屏幕上方12%区域 → 一键通关 ---------- */
+  /* ---------- 全关卡解锁：存档 JSON 字段增强 ----------
+   * 存档为明文JSON（pdpx_vyPlayerModel_Z 实测）：
+   *   unlockedLevels[] / clearedLevels[] / unlockedChapters[] / currLv ...
+   * 双层 hook：wx storage 层 + WXWASMSDK 桥层（C# 的 WXStorageGetStringSync）
+   * 读和写都过 boost → 重启后 C# 读到的就是全解锁存档 */
+  var CFG = G.__gmUnlockCfg = { on: true, levelMax: 500, chapterMax: 30 };
+  gm.cfg = CFG;
+
+  function fillIds(arr, max) {
+    if (!Array.isArray(arr) || arr.length > 3000) return false;
+    var have = {};
+    for (var i = 0; i < arr.length; i++) if (typeof arr[i] === 'number') have[arr[i]] = 1;
+    var changed = false;
+    for (var n = 1; n <= max; n++) if (!have[n]) { arr.push(n); changed = true; }
+    return changed;
+  }
+  function fixNode(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 10) return false;
+    var changed = false;
+    for (var k in node) {
+      if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+      var v = node[k], lk = ('' + k).toLowerCase();
+      if (typeof v === 'number') {
+        if (lk === 'highestunlockedlevelid' && v >= 0 && v < CFG.levelMax) { node[k] = CFG.levelMax; changed = true; }
+      } else if (Array.isArray(v)) {
+        if (lk === 'unlockedlevels' || lk === 'clearedlevels') { if (fillIds(v, CFG.levelMax)) changed = true; }
+        else if (lk === 'unlockedchapters') { if (fillIds(v, CFG.chapterMax)) changed = true; }
+        else { if (fixNode(v, depth + 1)) changed = true; }
+      } else if (v && typeof v === 'object') {
+        if (fixNode(v, depth + 1)) changed = true;
+      }
+    }
+    return changed;
+  }
+  function boostSaveJson(s) {
+    if (!CFG.on || typeof s !== 'string' || s.length < 40) return s;
+    if (s.indexOf('nlockedLevels') < 0 && s.indexOf('nlockedlevels') < 0 &&
+        s.indexOf('evels') < 0 && s.indexOf('evelId') < 0) return s;
+    try {
+      var o = JSON.parse(s);
+      if (!o || typeof o !== 'object') return s;
+      if (!fixNode(o, 0)) return s;
+      return JSON.stringify(o);
+    } catch (e) { return s; }
+  }
+
+  /* 层1：wx storage（wxhook 先于 game.js 装载 → 内层，二者叠加生效） */
   try {
-    var __lastGM = 0;
-    wx.onTouchStart(function (e) {
-      if (!e || !e.touches || e.touches.length !== 2) return;
-      var now = Date.now();
-      if (now - __lastGM < 1500) return;
-      var topLimit = 0;  // 需要屏幕高度
-      try {
-        var si = wx.getSystemInfoSync();
-        topLimit = (si.windowHeight || 667) * 0.12;
-      } catch (err) { topLimit = 80; }
-      var allTop = true;
-      for (var i = 0; i < e.touches.length; i++) {
-        if ((e.touches[i].clientY || e.touches[i].pageY || 999) > topLimit) { allTop = false; break; }
+    var _oSetS = wx.setStorageSync;
+    wx.setStorageSync = function (k, v) {
+      try { if (typeof v === 'string') v = boostSaveJson(v); } catch (e) {}
+      return _oSetS.call(wx, k, v);
+    };
+    var _oGetS = wx.getStorageSync;
+    wx.getStorageSync = function (k) {
+      var v = _oGetS.call(wx, k);
+      try { if (typeof v === 'string') v = boostSaveJson(v); } catch (e) {}
+      return v;
+    };
+    var _oSetA = wx.setStorage;
+    if (_oSetA) wx.setStorage = function (o) {
+      try { if (o && typeof o.data === 'string') o.data = boostSaveJson(o.data); } catch (e) {}
+      return _oSetA.call(wx, o);
+    };
+    var _oGetA = wx.getStorage;
+    if (_oGetA) wx.getStorage = function (o) {
+      if (o && o.success) {
+        var os = o.success, w = {};
+        for (var kk in o) w[kk] = o[kk];
+        w.success = function (res) {
+          try { if (res && typeof res.data === 'string') res.data = boostSaveJson(res.data); } catch (e) {}
+          os(res);
+        };
+        o = w;
       }
-      if (allTop) {
-        __lastGM = now;
-        gmToast('一键通关触发…', 1500);
-        G.gmFinish();
-      }
-    });
+      return _oGetA.call(wx, o);
+    };
   } catch (e) {}
 
-  glog('%c[gm] 模块⑥已装载：上方12%双指=一键通关尝试(Table 65143)', 'color:#d00;font-weight:bold',
-    '\n侦察命令：GameGlobal.dumpStorage() → dumpSave(key)',
-    '\n工具：GameGlobal.tblInfo(65143) / tblCall(65143, 0, 0)',
-    '\n⚠ 调用trap不伤游戏（wasm异常被catch），多点几次换姿势');
+  /* 层2：WXWASMSDK 桥（C# 直连通道；对象被插件按引用捕获，包方法即可生效） */
+  (function bridgeBoost() {
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries++;
+      var sdk = null;
+      try { sdk = G.WXWASMSDK; } catch (e) {}
+      if (sdk && typeof sdk.WXStorageGetStringSync === 'function' && !sdk.__gmBoosted) {
+        clearInterval(timer);
+        try {
+          var oGet = sdk.WXStorageGetStringSync;
+          sdk.WXStorageGetStringSync = function (key, def) {
+            var r = oGet.call(sdk, key, def);
+            try { r = boostSaveJson(r); } catch (e) {}
+            return r;
+          };
+          var oSet = sdk.WXStorageSetStringSync;
+          if (typeof oSet === 'function') {
+            sdk.WXStorageSetStringSync = function (key, val) {
+              try { if (typeof val === 'string') val = boostSaveJson(val); } catch (e) {}
+              return oSet.call(sdk, key, val);
+            };
+          }
+          sdk.__gmBoosted = true;
+          glog('[gm] WXWASMSDK 存储桥已hook（解锁增强双保险生效）');
+        } catch (e) {}
+      } else if (tries > 200) { clearInterval(timer); }
+    }, 300);
+  })();
+
+  /* 立即重写本地存档（不用重启就能让重开的选关界面生效） */
+  function unlockSave() {
+    try {
+      var info = wx.getStorageInfoSync();
+      var keys = (info && info.keys) || [];
+      var n = 0;
+      keys.forEach(function (k) {
+        if (!/^pdpx_vy/i.test(k)) return;
+        var v = _oGetS.call(wx, k);
+        if (typeof v !== 'string') return;
+        var nv = boostSaveJson(v);
+        if (nv !== v) { _oSetS.call(wx, k, nv); n++; glog('[gm] 已增强存档: ' + k); }
+      });
+      gmToast('存档解锁完成(改写' + n + '个) 重进选关生效', 2500);
+      return n;
+    } catch (e) { gmToast('unlockSave 异常', 1500); return -1; }
+  }
+  G.unlockSave = unlockSave;
+
+  glog('%c[gm] 模块⑥v2 已装载（槽位修正：OnFinishByGM=65083）', 'color:#d00;font-weight:bold',
+    '\n自检: GameGlobal.gm.diag()   通关: GameGlobal.gm.finish()',
+    '\n跳关: GameGlobal.gm.jump(关卡号)   加时: GameGlobal.gm.addTime(秒)',
+    '\n选关解锁: GameGlobal.unlockSave()（重启游戏后自动保持）',
+    '\n手势: 上方12%双指=一键通关');
 })();
