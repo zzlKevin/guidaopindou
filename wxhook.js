@@ -1300,3 +1300,155 @@ var __wxPerf = (function () {
 //     '\n双指（上方88%）→ 倒计时过滤+锁定',
 //     '\n双指（下方12%）→ 切换时间作弊（toggleTimeCheat）');
 // })();
+/* ============ [模块⑥] GM一键通关 + 关卡解锁工具 v1 ============ */
+/* 线索（2026-09-05 metadata 验证）：
+ *   PdpxRootMgr.OnFinishByGM —— 官方GM过关入口（事件handler，紧邻OnFinishCurJigsaw/ForceFail）
+ *   PBGameModelData.HighestUnlockedLevelId / PlayerData.unlockedLevels/clearedLevels —— 关卡解锁字段
+ *   wasm 间接函数表导出 Module.asm.Yq（表索引65143 → funcidx 11868）
+ * 存档：本地storage明文JSON（pdpx_vyXxxModel模式），网络层才加密
+ *
+ * 手势：双指点击 屏幕上方12%区域 → 触发一键通关尝试
+ * 控制台：GameGlobal.dumpStorage() 列存档 | GameGlobal.gmFinish() 手动触发
+ *         GameGlobal.tblInfo(n) 查表函数 | GameGlobal.tblCall(n, ...args) 调任意表函数 */
+(function () {
+  'use strict';
+  var G = typeof GameGlobal !== 'undefined' ? GameGlobal : {};
+  if (G.__gmModule) { return; }
+  G.__gmModule = true;
+
+  function gmToast(msg, dur) {
+    if (typeof __wxPerf !== 'undefined' && __wxPerf.toast) { __wxPerf.toast(msg, dur || 2000); return; }
+    try { wx.showToast({ title: msg, icon: 'none', duration: dur || 2000 }); } catch (e) {}
+  }
+  function glog() {
+    try { console.log.apply(console, arguments); } catch (e) {}
+  }
+
+  /* ---------- wasm 函数表访问 ---------- */
+  function getTable() {
+    try {
+      var M = G.Module || (typeof window !== 'undefined' && window.Module);
+      if (M && M.asm && M.asm.Yq && typeof M.asm.Yq.get === 'function') return M.asm.Yq;
+      /* 兜底：遍历 asm 找 WebAssembly.Table */
+      if (M && M.asm) {
+        for (var k in M.asm) {
+          if (M.asm[k] && typeof M.asm[k].get === 'function' && typeof M.asm[k].length === 'number') {
+            return M.asm[k];
+          }
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /* 表函数信息（参数个数 = wasm 函数 length） */
+  G.tblInfo = function (n) {
+    var t = getTable();
+    if (!t) { glog('[gm] wasm函数表未就绪（Module.asm.Yq 不存在）'); return null; }
+    try {
+      var f = t.get(n);
+      glog('%c[gm] Table[' + n + '] → 函数参数个数=' + (f && f.length) + '（IL2CPP实例方法≈ this+methodInfo）', 'color:#c60;font-weight:bold');
+      return f;
+    } catch (e) { glog('[gm] Table[' + n + '] 越界或无效'); return null; }
+  };
+
+  /* 调用任意表函数（args 为数字参数；wasm trap 会被 catch，不崩游戏主循环） */
+  G.tblCall = function (n) {
+    var f = G.tblInfo(n);
+    if (!f) return null;
+    var args = Array.prototype.slice.call(arguments, 1);
+    try {
+      var r = f.apply(null, args.length ? args : [0, 0]);
+      glog('%c[gm] Table[' + n + '] 调用成功，返回:', 'color:#0a0;font-weight:bold', r);
+      return r;
+    } catch (e) {
+      glog('[gm] Table[' + n + '] 调用trap（参数/this不对属正常，换参数再试）:', (e && e.message || e).toString().slice(0, 120));
+      return null;
+    }
+  };
+
+  /* ---------- 一键通关：调 OnFinishByGM（表索引65143） ----------
+   * 调用约定尝试顺序：
+   *   ① f(0, 0)      this=0（若handler不用实例字段，可能直接过）
+   *   ② 失败再试 f(0)（无methodInfo变体）
+   *   ③ 需要真实实例的话后续做实例扫描（gmScanInstance） */
+  var GM_FINISH_TABLE = 65143;
+  G.gmFinish = function () {
+    var t = getTable();
+    if (!t) { gmToast('wasm表未就绪'); return false; }
+    glog('%c[gm] 一键通关：调 Table[' + GM_FINISH_TABLE + ']（OnFinishByGM）', 'color:#d00;font-weight:bold');
+    var r1 = G.tblCall(GM_FINISH_TABLE, 0, 0);
+    if (r1 !== null && r1 !== undefined) { gmToast('GM调用成功'); return true; }
+    var r2 = G.tblCall(GM_FINISH_TABLE, 0);
+    gmToast(r2 !== null ? 'GM调用成功' : 'GM调用trap(可能需实例)');
+    return r2 !== null;
+  };
+
+  /* ---------- 存档侦察：列出全部 storage key ----------
+   * 目的：找 PlayerData/PBGameModelData 的存档 key（pdpx_vyXxxModel 模式）
+   * 返回 {key: 前500字符}，关卡解锁字段就在里面 */
+  G.dumpStorage = function () {
+    try {
+      var info = wx.getStorageInfoSync();
+      var keys = (info && info.keys) || [];
+      glog('%c[gm] storage 共 ' + keys.length + ' 个key（总' + ((info.currentSize || 0) / 1024).toFixed(0) + 'KB）', 'color:#06c;font-weight:bold');
+      var out = {};
+      keys.forEach(function (k) {
+        var sz = 0, preview = '';
+        try {
+          var v = wx.getStorageSync(k);
+          var s = typeof v === 'string' ? v : JSON.stringify(v);
+          sz = (s && s.length) || 0;
+          preview = (s || '').slice(0, 500);
+        } catch (e) { preview = '<读取失败>'; }
+        glog('[gm] ' + k + ' (' + sz + 'B)');
+        if (/pdpx|Model|Data|Save|Level|Player/i.test(k)) {
+          out[k] = preview;
+          glog('%c    内容: ' + preview, 'color:#08f');
+        }
+      });
+      glog('%c[gm] 找存档key后：GameGlobal.dumpSave("key名") 看完整内容', 'color:#06c');
+      return out;
+    } catch (e) { glog('[gm] dumpStorage 异常:', e && e.message); return null; }
+  };
+
+  /* 完整读某个存档key */
+  G.dumpSave = function (k) {
+    try {
+      var v = wx.getStorageSync(k);
+      var s = typeof v === 'string' ? v : JSON.stringify(v);
+      glog('%c[gm] 存档 ' + k + ' (' + (s || '').length + 'B)：', 'color:#08f;font-weight:bold');
+      glog(s);
+      return s;
+    } catch (e) { glog('[gm] 读取失败:', e && e.message); return null; }
+  };
+
+  /* ---------- 手势：双指点击屏幕上方12%区域 → 一键通关 ---------- */
+  try {
+    var __lastGM = 0;
+    wx.onTouchStart(function (e) {
+      if (!e || !e.touches || e.touches.length !== 2) return;
+      var now = Date.now();
+      if (now - __lastGM < 1500) return;
+      var topLimit = 0;  // 需要屏幕高度
+      try {
+        var si = wx.getSystemInfoSync();
+        topLimit = (si.windowHeight || 667) * 0.12;
+      } catch (err) { topLimit = 80; }
+      var allTop = true;
+      for (var i = 0; i < e.touches.length; i++) {
+        if ((e.touches[i].clientY || e.touches[i].pageY || 999) > topLimit) { allTop = false; break; }
+      }
+      if (allTop) {
+        __lastGM = now;
+        gmToast('一键通关触发…', 1500);
+        G.gmFinish();
+      }
+    });
+  } catch (e) {}
+
+  glog('%c[gm] 模块⑥已装载：上方12%双指=一键通关尝试(Table 65143)', 'color:#d00;font-weight:bold',
+    '\n侦察命令：GameGlobal.dumpStorage() → dumpSave(key)',
+    '\n工具：GameGlobal.tblInfo(65143) / tblCall(65143, 0, 0)',
+    '\n⚠ 调用trap不伤游戏（wasm异常被catch），多点几次换姿势');
+})();
